@@ -1,6 +1,6 @@
 # AGENTS.md
 
-このリポジトリは、Codex のモデル一覧に ChatGPT のモデルと OpenCode Go のモデルを同時に出すためのローカル中継サーバー（`codex-go-router`）です。仕組みと設定の詳細は [README.md](README.md) を参照してください。
+このリポジトリは、Codex のモデル一覧に ChatGPT のモデルと OpenCode Go のモデルを同時に出すためのローカル中継サーバー（`codex-go-router`）です。あわせて、ChatGPT の利用枠が上限でも Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。仕組みと設定の詳細は [README.md](README.md) を参照してください。
 
 ## セットアップを依頼されたときの手順
 
@@ -21,6 +21,8 @@
 5. `~/.codex/config.toml` が `local-router` プロバイダを向いている
 6. `codex debug models` の一覧に `go-deepseek-v4.1-flash` / `go-gpt-6-luna` / `go-muse-spark-1.3-contributor` が出る
 7. `codex exec --model go-gpt-6-luna 'Reply with OK only.'` が応答する
+8. `CODEX_API_BASE_URL=http://localhost:8000/backend-api` がデスクトップアプリに渡る設定になっている（macOS は `launchctl getenv`）
+9. デスクトップアプリ再起動後、`~/.codex/codex-go-router.log` に `POST /backend-api/devicecheck -> 200` が出る（アプリがローカル中継を向いている）
 
 ### 0. 前提を確認する
 
@@ -96,6 +98,20 @@ supports_websockets = false
 
 既存の `model_provider` や同じ名前のプロバイダ定義がある場合は、黙って置き換えず、**ユーザーに確認してから**上書きする。
 
+**注意:** `chatgpt_base_url`（config）や `CODEX_APP_SERVER_CHATGPT_BASE_URL`（環境変数）は設定しない。Codex Desktop のサインインが解除される。
+
+### 4.5 デスクトップアプリの API ベースをローカル中継へ向ける
+
+macOS:
+
+```sh
+launchctl setenv CODEX_API_BASE_URL "http://localhost:8000/backend-api"
+cp ~/.codex/codex-go-router/deploy/com.codex.go-router-env.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codex.go-router-env.plist
+```
+
+Linux はデスクトップエントリやシェル起動処理で `export CODEX_API_BASE_URL=http://localhost:8000/backend-api` を設定する。パスは必ず `/backend-api` まで含める（欠けると ChatGPT のログインが壊れる）。
+
 ### 5. 検証する
 
 ```sh
@@ -105,6 +121,23 @@ codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
 ```
 
 `codex exec` が動かない場合は `~/.codex/codex-go-router.log` か `systemctl --user status codex-go-router.service` のログを見て、原因を直してから再検証する。
+
+デスクトップアプリの検証は次を確認する。
+
+```sh
+launchctl getenv CODEX_API_BASE_URL     # http://localhost:8000/backend-api になっている
+tail -20 ~/.codex/codex-go-router.log   # /backend-api/devicecheck や /backend-api/wham/usage が出る
+```
+
+アプリ側で利用枠 API が `allowed: true` に書き換わっていることを確認するには、app-server へ直接問い合わせる。
+
+```sh
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"probe","title":"Probe","version":"0.0.1"}}}' \
+  '{"jsonrpc":"2.0","method":"initialized","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}' \
+  | codex app-server 2>/dev/null | grep '"id":2'
+```
 
 ### 6. 反映する
 
@@ -129,10 +162,16 @@ Codex デスクトップアプリや app-server が起動中なら再起動し�
 | `codex exec` が 401 | ルーターの `/models` は ChatGPT の `Authorization` が必要。`codex login` 済みか確認する |
 | `go build` が失敗する | Go のバージョンが古い。1.22 以上にする |
 | ポート 18789 が使用中 | `ROUTER_LISTEN=127.0.0.1:18790` で起動し、`config.toml` の `base_url` も合わせる |
+| ポート 8000 が使用中 | `ROUTER_API_LISTEN=127.0.0.1:8001` で起動し、`CODEX_API_BASE_URL` も `http://localhost:8001/backend-api` に合わせる |
+| デスクトップで送信ボタンがグレーアウトしたまま | `CODEX_API_BASE_URL` が未設定、または起動中アプリに反映されていない。設定後にアプリを再起動する |
+| ChatGPT タブがサインイン画面になる / サインアウトされる | `chatgpt_base_url`（config）や `CODEX_APP_SERVER_CHATGPT_BASE_URL` を設定している。削除してアプリを再起動する |
+| ログに `/backend-api/devicecheck` が出ない | アプリが中継を向いていない。`launchctl getenv CODEX_API_BASE_URL` を確認し、アプリを再起動する |
 
 ## リポジトリの構成
 
 - `main.go` … ルーター本体。`GO_MODELS` に対応モデルを定義している
-- `main_test.go` … カタログ合成と reasoning 変換のユニットテスト
+- `api.go` … ChatGPT API 中継（`CODEX_API_BASE_URL` の受け先）。利用枠レスポンスだけを書き換える
+- `main_test.go` / `api_test.go` … カタログ合成、reasoning 変換、利用枠サニタイズのユニットテスト
 - `deploy/codex-go-router.service` … systemd ユーザーサービスの雛形
+- `deploy/com.codex.go-router-env.plist` … macOS で `CODEX_API_BASE_URL` を永続化する LaunchAgent の雛形
 - `README.md` … 仕組み、手動セットアップ、設定一覧、注意点

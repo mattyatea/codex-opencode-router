@@ -83,6 +83,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/models", handleModels)
 	mux.HandleFunc("/responses", handleResponses)
+	serveAPI()
 	log.Printf("codex-go-router listening on %s", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }

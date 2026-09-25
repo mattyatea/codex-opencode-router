@@ -1,19 +1,21 @@
 # codex-opencode-router
 
-Codex はプロバイダを同時に1つしか使えないため、モデル一覧には「ChatGPT のモデル」か「OpenCode Go のモデル」のどちらかしか出せません。このリポジトリは、その制約をループバックの中継サーバーで回避する小さなリレーです。
+Codex のモデル一覧に ChatGPT のモデルと OpenCode Go のモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
 
 - `GET /models` … ChatGPT のモデルカタログを取得し、OpenCode Go のモデルを追記して返す
 - `POST /responses` … モデル名が `go-` で始まれば OpenCode Go へ、それ以外は ChatGPT へ転送する
+- ChatGPT API ベース（`127.0.0.1:8000`）… Codex Desktop / Codex app-server のバックエンド呼び出しを中継し、利用枠（`/api/codex/usage` と `/wham/usage`）の応答だけを「制限なし」に書き換える。それ以外はそのまま `https://chatgpt.com` へ素通しする
 
-Codex 側は `model_provider = "local-router"` を向くだけで、通常の GPT モデルと OpenCode Go のモデルを同じモデル一覧から選べます。
+Codex 側は `model_provider = "local-router"` を向け、デスクトップアプリには環境変数 `CODEX_API_BASE_URL=http://localhost:8000/backend-api` を渡すだけで、通常の GPT モデルと OpenCode Go のモデルを同じモデル一覧から選べます。OpenCode Go のモデルは ChatGPT の利用枠を消費しないため、ChatGPT 側の枠が尽きていても送信できます。
 
 ```mermaid
 flowchart LR
   Codex[Codex CLI / Desktop] -->|"GET /models"| Router[codex-go-router<br/>127.0.0.1:18789]
   Codex -->|"POST /responses"| Router
+  Desktop[Codex Desktop / app-server] -->|"backend-api/*"| Api[API base proxy<br/>127.0.0.1:8000]
   Router -->|"go-* を転送"| Go[OpenCode Go<br/>opencode.ai/zen/go/v1]
-  Router -->|"それ以外を転送"| ChatGPT[ChatGPT backend<br/>chatgpt.com/backend-api/codex]
-  Router -.->|"モデル一覧を合成"| Codex
+  Router -->|"それ以外を転送"| ChatGPT[ChatGPT backend<br/>chatgpt.com]
+  Api -->|"素通し + 利用枠だけ書き換え"| ChatGPT
 ```
 
 ## AI エージェントにセットアップさせる
@@ -42,7 +44,9 @@ systemctl --user enable --now codex-go-router.service
 systemctl --user status codex-go-router.service
 ```
 
-`~/.codex/config.toml` に追加する設定:
+macOS では `~/Library/LaunchAgents/com.codex.go-router.plist` を作り、`ProgramArguments` に `/Users/<you>/.codex/bin/codex-go-router` を指定して `launchctl bootstrap gui/$(id -u) <plist>` します（`RunAtLoad` / `KeepAlive` を有効にし、ログは `~/.codex/codex-go-router.log` へ）。
+
+## `~/.codex/config.toml` に追加する設定
 
 ```toml
 model_provider = "local-router"
@@ -56,12 +60,33 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
+## デスクトップアプリの API ベースをローカルへ向ける
+
+Codex Desktop は環境変数 `CODEX_API_BASE_URL` を見てバックエンドの接続先を決めます。`/backend-api` まで含めて指定してください。
+
+**macOS**
+
+```sh
+launchctl setenv CODEX_API_BASE_URL "http://localhost:8000/backend-api"
+```
+
+再ログイン後も維持するには `~/Library/LaunchAgents/com.codex.go-router-env.plist` を作り、`/bin/launchctl setenv CODEX_API_BASE_URL http://localhost:8000/backend-api` を `RunAtLoad` で実行します（`deploy/` に雛形があります）。
+
+**Linux**
+
+デスクトップエントリやシェルの起動処理で `export CODEX_API_BASE_URL=http://localhost:8000/backend-api` を設定します。
+
+設定後に Codex Desktop を再起動すると、利用枠の取得が `127.0.0.1:8000` 経由になり、枠が上限でも送信ボタンがグレーアウトしなくなります。実際の GPT モデルはこれまで通り上流の 429 を返し、アプリが `Go/...` モデルへ自動フォールバックします。
+
 ## 動作確認
 
 ```sh
 codex debug models        # go-* のモデルが一覧に出る
 codex exec --model go-gpt-6-luna 'Reply with OK only.'
 codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
+
+# 利用枠の中継が動いているか（Codex Desktop 起動後にログへ出る）
+grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 ```
 
 ## 設定
@@ -69,7 +94,8 @@ codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
 | `OPENCODE_GO_API_KEY` | なし（必須） | `~/.codex/.env`、無ければプロセス環境変数から読む |
-| `ROUTER_LISTEN` | `127.0.0.1:18789` | 待ち受けアドレス |
+| `ROUTER_LISTEN` | `127.0.0.1:18789` | モデル中継の待ち受けアドレス |
+| `ROUTER_API_LISTEN` | `127.0.0.1:8000,[::1]:8000` | ChatGPT API 中継の待ち受けアドレス（カンマ区切り） |
 | `CODEX_HOME` | `~/.codex` | `.env` を探すディレクトリ |
 
 ## 対応モデル
@@ -86,8 +112,20 @@ codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
 
 - OpenCode Go のモデルは `go-` 接頭辞で識別します。ChatGPT 側のカタログに同じ ID があっても衝突しません。
 - DeepSeek 系は `reasoning_text` イベントを返すため、ルーターが Codex の描画する `reasoning_summary` イベントへ変換しています。
-- ChatGPT の使用枠が上限に達していると、通常の GPT モデルは上流の 429 をそのまま返します。
-- ルーターは 127.0.0.1 のみで待ち受け、認証はありません。マルチユーザーマシンでは注意してください。
+- 書き換えるのは利用枠のレスポンスだけです。実際の ChatGPT モデルの呼び出しは素通しなので、枠が尽きていればこれまで通り上流の 429 が返ります。
+- `CODEX_API_BASE_URL` は `http://localhost:8000/backend-api` のように **`/backend-api` まで含めて**指定してください。パスが欠けると ChatGPT のログインや各種 API が壊れます。
+- `~/.codex/config.toml` の `chatgpt_base_url` や環境変数 `CODEX_APP_SERVER_CHATGPT_BASE_URL` は**設定しないでください**。Codex Desktop のサインインが解除されます（アプリ本体が同じ設定を参照するため）。
+- ルーターは 127.0.0.1 / [::1] のみで待ち受け、認証はありません。マルチユーザーマシンでは注意してください。
+- Codex のアップデートで利用枠の JSON 形式が変わった場合は `api.go` の `sanitizeUsage` を調整してください。
+
+## 元に戻す
+
+```sh
+launchctl unsetenv CODEX_API_BASE_URL                                # 環境変数を外す（macOS）
+rm ~/Library/LaunchAgents/com.codex.go-router-env.plist              # 常駐設定を消す（macOS）
+launchctl bootout gui/$(id -u)/com.codex.go-router                   # 中継を止める（macOS）
+systemctl --user disable --now codex-go-router.service               # 中継を止める（Linux）
+```
 
 ## 開発
 
