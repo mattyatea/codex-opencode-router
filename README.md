@@ -78,9 +78,9 @@ codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
 
 | モデル ID | Codex での表示名 | 備考 |
 | --- | --- | --- |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash (OpenCode Go) | 生の reasoning を思考サマリーに変換して表示 |
-| `gpt-6-luna` | GPT 6 Luna (OpenCode Go) | ネイティブの reasoning summary に対応 |
-| `muse-spark-1.3-contributor` | opencode-go/muse-spark-1.3 (Train) | ワークスペースの Privacy 設定で学習許可が必要 |
+| `deepseek-v4.1-flash` | `Go/DeepSeek V4.1 Flash` | 生の reasoning を思考サマリーに変換して表示 |
+| `gpt-6-luna` | `Go/GPT-6 Luna` | ネイティブの reasoning summary に対応 |
+| `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | ワークスペースの Privacy 設定で学習許可が必要 |
 
 ## 注意
 

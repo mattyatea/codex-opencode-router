@@ -39,9 +39,9 @@ type goModel struct {
 }
 
 var goModels = []goModel{
-	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash (OpenCode Go)", ClearToolMode: true},
-	{ID: "gpt-6-luna", Name: "GPT 6 Luna (OpenCode Go)"},
-	{ID: "muse-spark-1.3-contributor", Name: "opencode-go/muse-spark-1.3 (Train)", ClearToolMode: true},
+	{ID: "deepseek-v4.1-flash", Name: "Go/DeepSeek V4.1 Flash", ClearToolMode: true},
+	{ID: "gpt-6-luna", Name: "Go/GPT-6 Luna"},
+	{ID: "muse-spark-1.3-contributor", Name: "Go/Muse Spark 1.3 (Train)", ClearToolMode: true},
 }
 
 // sessionHeaderCandidates are checked in order for a stable per-conversation id.
