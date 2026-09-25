@@ -106,7 +106,7 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 | --- | --- | --- | --- |
 | `deepseek-v4.1-flash` | `Go/DeepSeek V4.1 Flash` | 1M | 生の reasoning を思考サマリーに変換して表示 |
 | `gpt-6-luna` | `Go/GPT-6 Luna` | 1M | ネイティブの reasoning summary に対応 |
-| `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | 1M | ワークスペースの Privacy 設定で学習許可が必要 |
+| `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | 1M | ワークスペースの Privacy 設定で学習許可が必要。function ツールのみ対応で reasoning effort は無視される（ルーターが調整） |
 
 カタログを合成するとき、各モデルの `context_window` / `max_context_window` をモデルごとの値で上書きします（OpenCode Go のモデルは ChatGPT のモデルよりコンテキストが広いため、継承したままだとコンテキストメーターと自動圧縮の閾値が実際とずれます）。値を変えるときは `main.go` の `goModels` の `ContextWindow` を更新してください。
 
@@ -114,6 +114,7 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 
 - OpenCode Go のモデルは `go-` 接頭辞で識別します。ChatGPT 側のカタログに同じ ID があっても衝突しません。
 - DeepSeek 系は `reasoning_text` イベントを返すため、ルーターが Codex の描画する `reasoning_summary` イベントへ変換しています。
+- strict な JSON Schema 検証をするモデル（Muse Spark など）向けに、Go リクエストのツールスキーマを正規化します（`required` に全プロパティを追加、`web_search` の ChatGPT 専用フィールドを除去、Muse Spark は function ツールのみに制限し `reasoning.effort` を除去）。
 - プロバイダをまたいで会話を続けると、reasoning の暗号化コンテンツを相手側が復号できず `invalid_encrypted_content` エラーになります。ルーターはリクエスト内の相手プロバイダ由来の reasoning 項目を除去してこれを防ぎます（ChatGPT ⇔ OpenCode Go の両方向）。
 - 書き換えるのは利用枠のレスポンスだけです。実際の ChatGPT モデルの呼び出しは素通しなので、枠が尽きていればこれまで通り上流の 429 が返ります。
 - `CODEX_API_BASE_URL` は `http://localhost:8000/backend-api` のように **`/backend-api` まで含めて**指定してください。パスが欠けると ChatGPT のログインや各種 API が壊れます。
