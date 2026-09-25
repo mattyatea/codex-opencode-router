@@ -69,6 +69,9 @@ func TestBuildUnionCatalogAppendsGoModels(t *testing.T) {
 	if base["tool_mode"] != "code_mode_only" {
 		t.Errorf("base model was modified: %v", base["tool_mode"])
 	}
+	if base["context_window"] != float64(272000) || base["max_context_window"] != float64(872000) {
+		t.Errorf("base model context was modified: %v / %v", base["context_window"], base["max_context_window"])
+	}
 }
 
 func TestConvertReasoningItemMovesRawReasoningToSummary(t *testing.T) {
