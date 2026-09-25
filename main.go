@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -267,6 +268,99 @@ func isChatGPTReasoning(item map[string]any) bool {
 	return false
 }
 
+// functionOnlyModels are Go models whose endpoint only accepts function tools.
+// Codex also sends custom, tool_search, web_search, and image tools, which make
+// these upstreams fail.
+var functionOnlyModels = map[string]bool{
+	"muse-spark-1.3-contributor": true,
+	"muse-spark-1.2-contributor": true,
+}
+
+// normalizeToolSchemas makes tool schemas satisfy providers that validate
+// strict JSON Schema, where every key in `properties` must also appear in
+// `required`. Codex marks optional parameters with descriptions and defaults
+// instead, so the keys are added while their meaning stays optional.
+func normalizeToolSchemas(payload map[string]any, model string) {
+	tools, ok := payload["tools"].([]any)
+	if !ok {
+		return
+	}
+	kept := make([]any, 0, len(tools))
+	for _, entry := range tools {
+		tool, ok := entry.(map[string]any)
+		if !ok {
+			kept = append(kept, entry)
+			continue
+		}
+		if functionOnlyModels[model] && tool["type"] != "function" {
+			continue
+		}
+		// Strict providers reject these ChatGPT-only web_search fields.
+		if tool["type"] != "web_search_preview" {
+			delete(tool, "search_content_types")
+			delete(tool, "external_web_access")
+		}
+		normalizeToolParameters(tool["parameters"])
+		kept = append(kept, tool)
+	}
+	payload["tools"] = kept
+}
+
+func normalizeToolParameters(value any) {
+	parameters, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	if len(properties) == 0 {
+		return
+	}
+	required := make([]string, 0, len(properties))
+	seen := map[string]bool{}
+	if existing, ok := parameters["required"].([]any); ok {
+		for _, name := range existing {
+			text := fmt.Sprint(name)
+			if !seen[text] {
+				required = append(required, text)
+				seen[text] = true
+			}
+		}
+	}
+	missing := make([]string, 0)
+	for name := range properties {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	sort.Strings(missing)
+	for _, name := range missing {
+		required = append(required, name)
+	}
+	list := make([]any, 0, len(required))
+	for _, name := range required {
+		list = append(list, name)
+	}
+	parameters["required"] = list
+}
+
+// noReasoningEffortModels are Go models whose endpoint rejects reasoning.effort.
+var noReasoningEffortModels = map[string]bool{
+	"muse-spark-1.3-contributor": true,
+	"muse-spark-1.2-contributor": true,
+}
+
+func normalizeReasoning(payload map[string]any, model string) {
+	if !noReasoningEffortModels[model] {
+		return
+	}
+	if reasoning, ok := payload["reasoning"].(map[string]any); ok {
+		delete(reasoning, "effort")
+	}
+}
+
 func handleResponses(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -286,6 +380,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	headers := http.Header{}
 	if isGo {
 		payload["model"] = strings.TrimPrefix(model, goPrefix)
+		normalizeToolSchemas(payload, payload["model"].(string))
+		normalizeReasoning(payload, payload["model"].(string))
 		body, _ = json.Marshal(payload)
 		origin, path = opencodeOrigin, "/zen/go/v1/responses"
 		headers.Set("Authorization", "Bearer "+goKey)
@@ -322,12 +418,12 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	request.Header = headers
 	if os.Getenv("ROUTER_DEBUG_HEADERS") == "1" {
 		if isGo {
-			log.Printf("go request model=%s", model)
+			tools, _ := payload["tools"].([]any)
+			log.Printf("go request model=%s tools=%d", model, len(tools))
 		} else {
-			instructions, _ := payload["instructions"].(string)
 			last := lastInputText(payload["input"])
-			log.Printf("chatgpt request model=%s thread=%s instructions=%q last_input=%q",
-				model, r.Header.Get("Thread-Id"), truncate(instructions, 200), truncate(last, 200))
+			log.Printf("chatgpt request model=%s thread=%s last_input=%q",
+				model, r.Header.Get("Thread-Id"), truncate(last, 200))
 		}
 	}
 	response, err := upstream.Do(request)
