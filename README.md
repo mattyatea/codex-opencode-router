@@ -102,11 +102,13 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 
 `main.go` の `GO_MODELS` に定義しています。OpenCode Go 側で Responses API に対応しているモデルだけを載せてください（chat/completions 専用のモデルは `/responses` では 503 になります）。
 
-| モデル ID | Codex での表示名 | 備考 |
-| --- | --- | --- |
-| `deepseek-v4.1-flash` | `Go/DeepSeek V4.1 Flash` | 生の reasoning を思考サマリーに変換して表示 |
-| `gpt-6-luna` | `Go/GPT-6 Luna` | ネイティブの reasoning summary に対応 |
-| `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | ワークスペースの Privacy 設定で学習許可が必要 |
+| モデル ID | Codex での表示名 | コンテキスト | 備考 |
+| --- | --- | --- | --- |
+| `deepseek-v4.1-flash` | `Go/DeepSeek V4.1 Flash` | 1M | 生の reasoning を思考サマリーに変換して表示 |
+| `gpt-6-luna` | `Go/GPT-6 Luna` | 1M | ネイティブの reasoning summary に対応 |
+| `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | 1M | ワークスペースの Privacy 設定で学習許可が必要 |
+
+カタログを合成するとき、各モデルの `context_window` / `max_context_window` をモデルごとの値で上書きします（OpenCode Go のモデルは ChatGPT のモデルよりコンテキストが広いため、継承したままだとコンテキストメーターと自動圧縮の閾値が実際とずれます）。値を変えるときは `main.go` の `goModels` の `ContextWindow` を更新してください。
 
 ## 注意
 

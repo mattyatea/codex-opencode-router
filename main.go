@@ -32,16 +32,21 @@ const (
 
 // goModel describes an OpenCode Go model that answers on the Responses API.
 // Other Go models are chat-completions-only or are not used here.
+// ContextWindow is the model's real context length in tokens; Codex uses it
+// for the context meter and auto-compaction. Set it per model because the
+// cloned ChatGPT catalog entry would otherwise inherit the GPT-6 Luna size.
 type goModel struct {
-	ID            string
-	Name          string
-	ClearToolMode bool
+	ID               string
+	Name             string
+	ClearToolMode    bool
+	ContextWindow    int
+	MaxContextWindow int
 }
 
 var goModels = []goModel{
-	{ID: "deepseek-v4.1-flash", Name: "Go/DeepSeek V4.1 Flash", ClearToolMode: true},
-	{ID: "gpt-6-luna", Name: "Go/GPT-6 Luna"},
-	{ID: "muse-spark-1.3-contributor", Name: "Go/Muse Spark 1.3 (Train)", ClearToolMode: true},
+	{ID: "deepseek-v4.1-flash", Name: "Go/DeepSeek V4.1 Flash", ClearToolMode: true, ContextWindow: 1_000_000},
+	{ID: "gpt-6-luna", Name: "Go/GPT-6 Luna", ContextWindow: 1_000_000},
+	{ID: "muse-spark-1.3-contributor", Name: "Go/Muse Spark 1.3 (Train)", ClearToolMode: true, ContextWindow: 1_000_000},
 }
 
 // sessionHeaderCandidates are checked in order for a stable per-conversation id.
@@ -187,6 +192,14 @@ func buildUnionCatalog(catalog map[string]any) ([]byte, error) {
 		clone["additional_speed_tiers"] = []any{}
 		clone["use_responses_lite"] = false
 		clone["multi_agent_version"] = nil
+		if spec.ContextWindow > 0 {
+			clone["context_window"] = spec.ContextWindow
+			maxWindow := spec.ContextWindow
+			if spec.MaxContextWindow > 0 {
+				maxWindow = spec.MaxContextWindow
+			}
+			clone["max_context_window"] = maxWindow
+		}
 		if spec.ClearToolMode {
 			clone["tool_mode"] = nil
 		}

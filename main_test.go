@@ -9,10 +9,13 @@ func TestBuildUnionCatalogAppendsGoModels(t *testing.T) {
 	catalog := map[string]any{
 		"models": []any{
 			map[string]any{
-				"slug":       "gpt-6-luna",
-				"priority":   float64(3),
-				"tool_mode":  "code_mode_only",
-				"models_tmp": "ignored",
+				"slug":                             "gpt-6-luna",
+				"priority":                         float64(3),
+				"tool_mode":                        "code_mode_only",
+				"context_window":                   float64(272000),
+				"max_context_window":               float64(872000),
+				"effective_context_window_percent": float64(95),
+				"models_tmp":                       "ignored",
 			},
 		},
 	}
@@ -49,6 +52,17 @@ func TestBuildUnionCatalogAppendsGoModels(t *testing.T) {
 		}
 		if spec.ClearToolMode && model["tool_mode"] != nil {
 			t.Errorf("%s tool_mode = %v, want nil", spec.ID, model["tool_mode"])
+		}
+		if spec.ContextWindow > 0 {
+			if got := model["context_window"]; got != float64(spec.ContextWindow) {
+				t.Errorf("%s context_window = %v, want %d", spec.ID, got, spec.ContextWindow)
+			}
+			if got := model["max_context_window"]; got != float64(spec.ContextWindow) {
+				t.Errorf("%s max_context_window = %v, want %d", spec.ID, got, spec.ContextWindow)
+			}
+			if model["effective_context_window_percent"] != float64(95) {
+				t.Errorf("%s effective_context_window_percent = %v, want 95", spec.ID, model["effective_context_window_percent"])
+			}
 		}
 	}
 	base := bySlug["gpt-6-luna"]
