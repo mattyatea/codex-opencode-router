@@ -233,6 +233,40 @@ func cloneMap(source map[string]any) (map[string]any, error) {
 	return clone, nil
 }
 
+// stripForeignReasoning removes reasoning items produced by the other backend.
+// ChatGPT reasoning items carry ids like "rs_..." and encrypted content that
+// starts with "gAAAA"; OpenCode Go (DeepSeek) uses UUIDs. Sending one
+// provider's encrypted reasoning to the other fails verification, so each
+// direction keeps only its own items.
+func stripForeignReasoning(payload map[string]any, forGo bool) {
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return
+	}
+	kept := make([]any, 0, len(input))
+	for _, entry := range input {
+		item, ok := entry.(map[string]any)
+		if !ok || item["type"] != "reasoning" {
+			kept = append(kept, entry)
+			continue
+		}
+		if isChatGPTReasoning(item) != forGo {
+			kept = append(kept, entry)
+		}
+	}
+	payload["input"] = kept
+}
+
+func isChatGPTReasoning(item map[string]any) bool {
+	if id, ok := item["id"].(string); ok && strings.HasPrefix(id, "rs_") {
+		return true
+	}
+	if encrypted, ok := item["encrypted_content"].(string); ok && strings.HasPrefix(encrypted, "gAAAA") {
+		return true
+	}
+	return false
+}
+
 func handleResponses(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -246,6 +280,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	model, _ := payload["model"].(string)
 	isGo := strings.HasPrefix(model, goPrefix)
+	stripForeignReasoning(payload, isGo)
 
 	origin, path := chatgptOrigin, "/backend-api/codex/responses"
 	headers := http.Header{}
@@ -266,6 +301,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "missing authorization", http.StatusUnauthorized)
 			return
 		}
+		body, _ = json.Marshal(payload)
 		headers.Set("Authorization", authorization)
 		for name, values := range r.Header {
 			if hopByHopHeaders[strings.ToLower(name)] {
@@ -284,14 +320,14 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.Header = headers
-	if os.Getenv("ROUTER_DEBUG_HEADERS") == "1" && !isGo {
-		for name, values := range headers {
-			for _, value := range values {
-				if strings.EqualFold(name, "Authorization") {
-					value = "<redacted>"
-				}
-				log.Printf("outgoing header %s: %s", name, value)
-			}
+	if os.Getenv("ROUTER_DEBUG_HEADERS") == "1" {
+		if isGo {
+			log.Printf("go request model=%s", model)
+		} else {
+			instructions, _ := payload["instructions"].(string)
+			last := lastInputText(payload["input"])
+			log.Printf("chatgpt request model=%s thread=%s instructions=%q last_input=%q",
+				model, r.Header.Get("Thread-Id"), truncate(instructions, 200), truncate(last, 200))
 		}
 	}
 	response, err := upstream.Do(request)
@@ -450,6 +486,39 @@ func opencodeSessionID(incoming http.Header) string {
 		}
 	}
 	return randomUUID()
+}
+
+func lastInputText(input any) string {
+	items, ok := input.([]any)
+	if !ok {
+		return ""
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		item, ok := items[i].(map[string]any)
+		if !ok || item["role"] != "user" {
+			continue
+		}
+		switch content := item["content"].(type) {
+		case string:
+			return content
+		case []any:
+			for _, part := range content {
+				if p, ok := part.(map[string]any); ok && p["type"] == "input_text" {
+					if text, ok := p["text"].(string); ok {
+						return text
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func truncate(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
 
 func randomUUID() string {
