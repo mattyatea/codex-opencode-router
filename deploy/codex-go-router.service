@@ -1,0 +1,11 @@
+[Unit]
+Description=Codex local model router (ChatGPT + OpenCode Go)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.codex/bin/codex-go-router
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
