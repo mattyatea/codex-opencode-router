@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	listenDefault    = "127.0.0.1:18789"
-	goPrefix         = "go-"
-	baseCatalogModel = "gpt-6-luna"
-	chatgptOrigin    = "https://chatgpt.com"
-	opencodeOrigin   = "https://opencode.ai"
-	maxSSELineBytes  = 16 << 20
+	listenDefault           = "127.0.0.1:18789"
+	goPrefix                = "go-"
+	baseCatalogModel        = "gpt-6-luna"
+	minCatalogClientVersion = "0.160.0"
+	chatgptOrigin           = "https://chatgpt.com"
+	opencodeOrigin          = "https://opencode.ai"
+	maxSSELineBytes         = 16 << 20
 )
 
 // goModel describes an OpenCode Go model that answers on the Responses API.
@@ -141,6 +142,14 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	// The upstream catalog hides newer models from older Codex clients.
+	// Ask for at least the version that first includes GPT-6.1 Sol.
+	var major, minor, patch int
+	if n, _ := fmt.Sscanf(r.URL.Query().Get("client_version"), "%d.%d.%d", &major, &minor, &patch); n == 3 && major == 0 && minor < 160 {
+		query := request.URL.Query()
+		query.Set("client_version", minCatalogClientVersion)
+		request.URL.RawQuery = query.Encode()
 	}
 	request.Header.Set("Authorization", authorization)
 	response, err := upstream.Do(request)
