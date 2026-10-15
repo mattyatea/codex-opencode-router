@@ -575,13 +575,14 @@ func convertReasoningItem(value any) {
 	if !hasRawReasoning {
 		return
 	}
+	summary := make([]any, 0, len(content))
 	for _, entry := range content {
-		if part, ok := entry.(map[string]any); ok {
-			part["type"] = "summary_text"
+		if part, ok := entry.(map[string]any); ok && part["type"] == "reasoning_text" {
+			summary = append(summary, map[string]any{"type": "summary_text", "text": part["text"]})
 		}
 	}
-	item["content"] = []any{}
-	item["summary"] = content
+	// Codex retains reasoning_text content and sends it back on subsequent turns.
+	item["summary"] = summary
 }
 
 func opencodeSessionID(incoming http.Header) string {

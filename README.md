@@ -113,7 +113,7 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 ## 注意
 
 - OpenCode Go のモデルは `go-` 接頭辞で識別します。ChatGPT 側のカタログに同じ ID があっても衝突しません。
-- DeepSeek 系は `reasoning_text` イベントを返すため、ルーターが Codex の描画する `reasoning_summary` イベントへ変換しています。
+- DeepSeek 系は `reasoning_text` イベントを返すため、ルーターが Codex の描画する `reasoning_summary` イベントへ変換しています。reasoning 項目の元の `content` は保持し、thinking モードで必要な本文が次のリクエストにも渡るようにしています。
 - strict な JSON Schema 検証をするモデル（Muse Spark など）向けに、Go リクエストのツールスキーマを正規化します（`required` に全プロパティを追加、`web_search` の ChatGPT 専用フィールドを除去、Muse Spark は function ツールのみに制限し `reasoning.effort` を除去）。
 - プロバイダをまたいで会話を続けると、reasoning の暗号化コンテンツを相手側が復号できず `invalid_encrypted_content` エラーになります。ルーターはリクエスト内の相手プロバイダ由来の reasoning 項目を除去してこれを防ぎます（ChatGPT ⇔ OpenCode Go の両方向）。
 - 書き換えるのは利用枠のレスポンスだけです。実際の ChatGPT モデルの呼び出しは素通しなので、枠が尽きていればこれまで通り上流の 429 が返ります。

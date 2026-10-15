@@ -145,7 +145,7 @@ func TestBuildUnionCatalogAppendsGoModels(t *testing.T) {
 	}
 }
 
-func TestConvertReasoningItemMovesRawReasoningToSummary(t *testing.T) {
+func TestConvertReasoningItemPreservesRawReasoningWithSummary(t *testing.T) {
 	item := map[string]any{
 		"type": "reasoning",
 		"content": []any{
@@ -160,7 +160,11 @@ func TestConvertReasoningItemMovesRawReasoningToSummary(t *testing.T) {
 	if part := summary[0].(map[string]any); part["type"] != "summary_text" || part["text"] != "step" {
 		t.Errorf("summary part = %v", part)
 	}
-	if content := item["content"].([]any); len(content) != 0 {
-		t.Errorf("content = %v, want empty", content)
+	content := item["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content = %v, want original reasoning", content)
+	}
+	if part := content[0].(map[string]any); part["type"] != "reasoning_text" || part["text"] != "step" {
+		t.Errorf("reasoning content = %v, want original reasoning_text", part)
 	}
 }
