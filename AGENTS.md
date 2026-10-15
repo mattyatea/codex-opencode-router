@@ -122,6 +122,12 @@ codex exec --model go-deepseek-v4.1-flash 'How much is 17*23? Think briefly.'
 
 `codex exec` が動かない場合は `~/.codex/codex-go-router.log` か `systemctl --user status codex-go-router.service` のログを見て、原因を直してから再検証する。
 
+Gmail・Slack などの接続アプリがチャットで使えない場合は、`codex_apps` の起動ログを確認する。
+`timed out awaiting tools/list after 30s` が出ていれば、README の「Gmail・Slack などの接続アプリが読み込まれない場合」に従って起動待ち時間を120秒にする。
+既存の `[mcp_servers.codex_apps]` は重複追加せず、上書きする場合は既存設定を確認する。
+`codex mcp list --json` で設定を確認し、app-server の `mcpServerStatus/list` で対象アプリのツールが読み込まれたことを確認する。
+設定の読み込みと実際のツール呼び出し成功は区別して報告する。
+
 デスクトップアプリの検証は次を確認する。
 
 ```sh

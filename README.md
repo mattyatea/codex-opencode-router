@@ -60,6 +60,25 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
+### Gmail・Slack などの接続アプリが読み込まれない場合
+
+ログに `codex_apps` の `timed out awaiting tools/list after 30s` が出る場合は、接続アプリの起動待ち時間を延ばします。
+`~/.codex/config.toml` に次を追加し、Codex を再起動してください。
+既存の `[mcp_servers.codex_apps]` がある場合は重複追加せず、その設定を確認して調整してください。
+
+```toml
+[mcp_servers.codex_apps]
+url = "https://chatgpt.com/backend-api/ps/mcp"
+auth = "chatgpt"
+startup_timeout_sec = 120
+http_headers = { "X-OpenAI-Product-Sku" = "codex" }
+```
+
+接続アプリは ChatGPT の認証で直接接続し、モデルの転送は引き続きルーターが担当します。
+API キーの追加は不要です。
+`codex mcp list --json` で `codex_apps` の待ち時間が120秒になっていることを確認し、app-server の `mcpServerStatus/list` で Gmail・Slack のツールが読み込まれたことを確認してください。
+上流の利用制限や通信エラーは、待ち時間を延ばしても解消しません。
+
 ## デスクトップアプリの API ベースをローカルへ向ける
 
 Codex Desktop は環境変数 `CODEX_API_BASE_URL` を見てバックエンドの接続先を決めます。`/backend-api` まで含めて指定してください。
