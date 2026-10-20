@@ -24,7 +24,7 @@ var upstream = &http.Client{Timeout: 0}
 
 func providerForModel(model string) *provider.Provider {
 	for i := range providers {
-		if strings.HasPrefix(model, providers[i].ID+"-") {
+		if strings.HasPrefix(model, providers[i].ModelPrefix()) {
 			return &providers[i]
 		}
 	}
@@ -85,7 +85,7 @@ func buildUnionCatalog(catalog map[string]any) ([]byte, error) {
 			if err != nil {
 				continue
 			}
-			clone["slug"] = p.ID + "-" + spec.ID
+			clone["slug"] = p.ModelPrefix() + spec.ID
 			clone["display_name"] = spec.Name
 			if spec.Name == "" {
 				clone["display_name"] = p.Name + "/" + spec.ID
@@ -106,6 +106,17 @@ func buildUnionCatalog(catalog map[string]any) ([]byte, error) {
 			}
 			if spec.ClearToolMode {
 				clone["tool_mode"] = nil
+			}
+			if spec.InputModalities != nil {
+				clone["input_modalities"] = spec.InputModalities
+			}
+			if spec.ReasoningLevels != nil {
+				levels := make([]any, 0, len(spec.ReasoningLevels))
+				for _, effort := range spec.ReasoningLevels {
+					levels = append(levels, map[string]any{"effort": effort, "description": effort})
+				}
+				clone["supported_reasoning_levels"] = levels
+				clone["default_reasoning_level"] = "low"
 			}
 			if priority, ok := clone["priority"].(float64); ok {
 				clone["priority"] = priority + 20
@@ -187,7 +198,12 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				model, r.Header.Get("Thread-Id"), truncate(last, 200))
 		}
 	}
-	response, err := upstream.Do(request)
+	var response *http.Response
+	if p != nil && p.RoundTrip != nil {
+		response, err = p.RoundTrip(upstream, request)
+	} else {
+		response, err = upstream.Do(request)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

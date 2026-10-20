@@ -79,11 +79,16 @@ func loadProviders(path string, env map[string]string) ([]provider.Provider, err
 		p.APIKey = value
 		result = append(result, p)
 	}
-	seen := map[string]bool{"go": true}
+	if value := key("INCEPTION_API_KEY"); value != "" {
+		p := withReasoningTags(provider.Inception())
+		p.APIKey = value
+		result = append(result, p)
+	}
+	seen := map[string]bool{"go": true, "inception-labs": true}
 	validID := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	for _, p := range config.Providers {
 		if !validID.MatchString(p.ID) || seen[p.ID] {
-			return nil, fmt.Errorf("provider id %q must be unique, use lowercase letters/digits/underscores, and cannot be go", p.ID)
+			return nil, fmt.Errorf("provider id %q must be unique, use lowercase letters/digits/underscores, and cannot be go or inception-labs", p.ID)
 		}
 		seen[p.ID] = true
 		u, err := url.Parse(p.BaseURL)
