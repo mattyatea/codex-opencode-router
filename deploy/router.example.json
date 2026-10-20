@@ -1,0 +1,18 @@
+{
+  "providers": [
+    {
+      "id": "myprovider",
+      "name": "My Provider",
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": "MY_PROVIDER_API_KEY",
+      "models": [
+        {
+          "id": "model-id",
+          "name": "My Provider / Model",
+          "context_window": 128000,
+          "clear_tool_mode": true
+        }
+      ]
+    }
+  ]
+}
