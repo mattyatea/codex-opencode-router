@@ -1,9 +1,9 @@
 # codex-opencode-router
 
-Codex のモデル一覧に ChatGPT のモデルと OpenCode Go のモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
+Codex のモデル一覧に ChatGPT、OpenCode Go、自分で設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
 
-- `GET /models` … ChatGPT のモデルカタログを取得し、OpenCode Go のモデルを追記して返す
-- `POST /responses` … モデル名が `go-` で始まれば OpenCode Go へ、それ以外は ChatGPT へ転送する
+- `GET /models` … ChatGPT のモデルカタログを取得し、登録済みプロバイダのモデルを追記して返す
+- `POST /responses` … モデル名の `<プロバイダ ID>-` 接頭辞で接続先を選び、それ以外は ChatGPT へ転送する
 - ChatGPT API ベース（`127.0.0.1:8000`）… Codex Desktop / Codex app-server のバックエンド呼び出しを中継し、利用枠（`/api/codex/usage` と `/wham/usage`）の応答だけを「制限なし」に書き換える。それ以外はそのまま `https://chatgpt.com` へ素通しする
 
 Codex 側は `model_provider = "local-router"` を向け、デスクトップアプリには環境変数 `CODEX_API_BASE_URL=http://localhost:8000/backend-api` を渡すだけで、通常の GPT モデルと OpenCode Go のモデルを同じモデル一覧から選べます。OpenCode Go のモデルは ChatGPT の利用枠を消費しないため、ChatGPT 側の枠が尽きていても送信できます。
@@ -31,7 +31,7 @@ AI エージェント（Codex など）に任せる場合は、次のように�
 ```sh
 git clone https://github.com/mattyatea/codex-opencode-router.git ~/.codex/codex-go-router
 cd ~/.codex/codex-go-router
-go build -o ~/.codex/bin/codex-go-router .
+go build -o ~/.codex/bin/codex-go-router ./src
 
 # API キー（Codex 本体と同じ .env を読む）
 umask 077
@@ -112,14 +112,50 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
-| `OPENCODE_GO_API_KEY` | なし（必須） | `~/.codex/.env`、無ければプロセス環境変数から読む |
+| `OPENCODE_GO_API_KEY` | なし | 設定すると組み込みの OpenCode Go モデルを有効化。`~/.codex/.env`、無ければプロセス環境変数から読む |
+| `ROUTER_CONFIG` | `$CODEX_HOME/router.json` | 追加プロバイダの JSON 設定。省略時にファイルがなければ追加なし |
 | `ROUTER_LISTEN` | `127.0.0.1:18789` | モデル中継の待ち受けアドレス |
 | `ROUTER_API_LISTEN` | `127.0.0.1:8000,[::1]:8000` | ChatGPT API 中継の待ち受けアドレス（カンマ区切り） |
-| `CODEX_HOME` | `~/.codex` | `.env` を探すディレクトリ |
+| `CODEX_HOME` | `~/.codex` | `.env` と `router.json` を探すディレクトリ |
+
+## 好きなプロバイダを追加する
+
+Responses API（`POST /responses`）互換の接続先を、`~/.codex/router.json` に追加できます。コードの変更や再ビルドは不要です。[設定例](deploy/router.example.json) をコピーし、URL とモデル ID を使いたい接続先に置き換えてください。
+
+```json
+{
+  "providers": [
+    {
+      "id": "myprovider",
+      "name": "My Provider",
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": "MY_PROVIDER_API_KEY",
+      "models": [
+        {
+          "id": "model-id",
+          "name": "My Provider / Model",
+          "context_window": 128000,
+          "clear_tool_mode": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+この例では `myprovider-model-id` がモデル一覧に出て、送信時は `https://api.example.com/v1/responses` に `model: "model-id"` として転送されます。`base_url` に `/responses` は含めません。`providers` には複数の接続先を、`models` には複数のモデルを指定できます。
+
+API キーの値は JSON に書かず、`api_key_env` で指定した名前を `~/.codex/.env` に `export MY_PROVIDER_API_KEY=...` の形で保存するか、ルーターのプロセス環境変数に設定します。`.env` を使う場合はパーミッションを `0600` にしてください。認証は `Authorization: Bearer <キー>` 形式で、認証不要のローカルサーバーでは `api_key_env` を省略できます。ChatGPT の認証情報や Cookie は追加先へ転送しません。
+
+`id` は英小文字から始まる英小文字・数字・アンダースコアで指定し、重複させないでください。`go` は OpenCode Go 用の予約名です。`name` を省略すると ID を表示名に使います。モデルの `context_window` と `max_context_window` を省略すると ChatGPT のカタログの値を継承するため、使うモデルの実際の値を指定してください。`clear_tool_mode: true` は継承元の ChatGPT 専用ツールモードを解除します。
+
+設定後はルーターを再起動します（Linux の例: `systemctl --user restart codex-go-router.service`）。OpenCode Go は従来どおり `OPENCODE_GO_API_KEY` があれば有効になり、追加プロバイダだけを使う場合は不要です。モデル一覧の取得には引き続き ChatGPT ログインが必要です。
+
+対応範囲は Responses API 互換のリクエスト、JSON 応答、SSE ストリーミングです。Chat Completions 専用や Anthropic Messages API の接続先には、Responses API に変換する中継が別途必要です。OpenCode Go 向けのツールスキーマ・reasoning 調整は追加先には適用しません。追加先の reasoning は接続先の識別情報を付けて保持し、同じ接続先に戻すときだけ元の形へ復元します。
 
 ## 対応モデル
 
-`main.go` の `GO_MODELS` に定義しています。OpenCode Go 側で Responses API に対応しているモデルだけを載せてください（chat/completions 専用のモデルは `/responses` では 503 になります）。
+組み込みの OpenCode Go モデルは `src/provider/opencode.go` の `goModels` に定義しています。OpenCode Go 側で Responses API に対応しているモデルだけを載せてください（chat/completions 専用のモデルは `/responses` では 503 になります）。
 
 | モデル ID | Codex での表示名 | コンテキスト | 備考 |
 | --- | --- | --- | --- |
@@ -127,19 +163,19 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 | `gpt-6-luna` | `Go/GPT-6 Luna` | 1M | ネイティブの reasoning summary に対応 |
 | `muse-spark-1.3-contributor` | `Go/Muse Spark 1.3 (Train)` | 1M | ワークスペースの Privacy 設定で学習許可が必要。function ツールのみ対応で reasoning effort は無視される（ルーターが調整） |
 
-カタログを合成するとき、各モデルの `context_window` / `max_context_window` をモデルごとの値で上書きします（OpenCode Go のモデルは ChatGPT のモデルよりコンテキストが広いため、継承したままだとコンテキストメーターと自動圧縮の閾値が実際とずれます）。値を変えるときは `main.go` の `goModels` の `ContextWindow` を更新してください。
+カタログを合成するとき、各モデルの `context_window` / `max_context_window` をモデルごとの値で上書きします（OpenCode Go のモデルは ChatGPT のモデルよりコンテキストが広いため、継承したままだとコンテキストメーターと自動圧縮の閾値が実際とずれます）。値を変えるときは `src/provider/opencode.go` の `goModels` の `ContextWindow` を更新してください。
 
 ## 注意
 
 - OpenCode Go のモデルは `go-` 接頭辞で識別します。ChatGPT 側のカタログに同じ ID があっても衝突しません。
 - DeepSeek 系は `reasoning_text` イベントを返すため、ルーターが Codex の描画する `reasoning_summary` イベントへ変換しています。reasoning 項目の元の `content` は保持し、thinking モードで必要な本文が次のリクエストにも渡るようにしています。
 - strict な JSON Schema 検証をするモデル（Muse Spark など）向けに、Go リクエストのツールスキーマを正規化します（`required` に全プロパティを追加、`web_search` の ChatGPT 専用フィールドを除去、Muse Spark は function ツールのみに制限し `reasoning.effort` を除去）。
-- プロバイダをまたいで会話を続けると、reasoning の暗号化コンテンツを相手側が復号できず `invalid_encrypted_content` エラーになります。ルーターはリクエスト内の相手プロバイダ由来の reasoning 項目を除去してこれを防ぎます（ChatGPT ⇔ OpenCode Go の両方向）。
+- プロバイダをまたいで会話を続けると、reasoning の暗号化コンテンツを相手側が復号できず `invalid_encrypted_content` エラーになります。ルーターはリクエスト内の相手プロバイダ由来の reasoning 項目を除去してこれを防ぎます（追加プロバイダ間の切り替えにも適用）。
 - 書き換えるのは利用枠のレスポンスだけです。実際の ChatGPT モデルの呼び出しは素通しなので、枠が尽きていればこれまで通り上流の 429 が返ります。
 - `CODEX_API_BASE_URL` は `http://localhost:8000/backend-api` のように **`/backend-api` まで含めて**指定してください。パスが欠けると ChatGPT のログインや各種 API が壊れます。
 - `~/.codex/config.toml` の `chatgpt_base_url` や環境変数 `CODEX_APP_SERVER_CHATGPT_BASE_URL` は**設定しないでください**。Codex Desktop のサインインが解除されます（アプリ本体が同じ設定を参照するため）。
 - ルーターは 127.0.0.1 / [::1] のみで待ち受け、認証はありません。マルチユーザーマシンでは注意してください。
-- Codex のアップデートで利用枠の JSON 形式が変わった場合は `api.go` の `sanitizeUsage` を調整してください。
+- Codex のアップデートで利用枠の JSON 形式が変わった場合は `src/api.go` の `sanitizeUsage` を調整してください。
 
 ## 元に戻す
 
@@ -152,7 +188,26 @@ systemctl --user disable --now codex-go-router.service               # 中継を
 
 ## 開発
 
+```text
+src/
+  main.go              # サーバー起動
+  config.go            # 環境変数・プロバイダ設定の読み込み
+  router.go            # カタログ合成と HTTP / SSE 中継
+  api.go               # ChatGPT バックエンド API 中継
+  chatgpt.go           # 既定の ChatGPT 接続
+  responses.go         # Responses API 共通のリクエスト・応答処理
+  reasoning.go         # 接続先ごとの reasoning 分離
+  provider/
+    provider.go        # 外部プロバイダ・モデルの共通型とコールバック定義
+    opencode.go        # OpenCode Go 固有の処理
+```
+
+`src/provider/provider.go` に外部プロバイダの共通型 `Provider` とモデルの型 `Model` を定義しています。サービス固有の実装は `src/provider/<名前>.go` に `Provider` を返す関数として置き、`src/config.go` の `loadProviders` から読み込みます。OpenCode Go が実装例です。
+
+リクエストの調整は `PrepareRequest`、SSE イベントの変換は `RewriteEvent`、JSON 応答の変換は `RewriteResponse` に指定します。コールバックを省略すると、その変換は行いません。設定読み込み、共通の通信処理、reasoning の分離はルーター側が担当します。通常の Responses API 互換接続先は、従来どおり `router.json` への追記だけで追加できます。
+
 ```sh
+go build -o codex-go-router ./src
 go vet ./...
 go test ./...
 ```

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-このリポジトリは、Codex のモデル一覧に ChatGPT のモデルと OpenCode Go のモデルを同時に出すためのローカル中継サーバー（`codex-go-router`）です。あわせて、ChatGPT の利用枠が上限でも Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。仕組みと設定の詳細は [README.md](README.md) を参照してください。
+このリポジトリは、Codex のモデル一覧に ChatGPT、OpenCode Go、設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバー（`codex-go-router`）です。あわせて、ChatGPT の利用枠が上限でも Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。仕組みと設定の詳細は [README.md](README.md) を参照してください。
 
 ## セットアップを依頼されたときの手順
 
@@ -40,7 +40,7 @@ codex login status
 ```sh
 git clone https://github.com/mattyatea/codex-opencode-router.git ~/.codex/codex-go-router
 cd ~/.codex/codex-go-router
-go build -o ~/.codex/bin/codex-go-router .
+go build -o ~/.codex/bin/codex-go-router ./src
 ```
 
 ### 2. OpenCode Go の API キーを設定する
@@ -175,9 +175,17 @@ Codex デスクトップアプリや app-server が起動中なら再起動し�
 
 ## リポジトリの構成
 
-- `main.go` … ルーター本体。`GO_MODELS` に対応モデルを定義している
-- `api.go` … ChatGPT API 中継（`CODEX_API_BASE_URL` の受け先）。利用枠レスポンスだけを書き換える
-- `main_test.go` / `api_test.go` … カタログ合成、reasoning 変換、利用枠サニタイズのユニットテスト
+- `src/main.go` … 設定を読み込み、モデル中継とバックエンド API 中継を起動する
+- `src/config.go` … `.env`・プロバイダ設定の読み込みと設定ファイルのパス解決
+- `src/router.go` … モデルカタログの合成、接続先の選択、HTTP / SSE の中継
+- `src/provider/provider.go` … 外部プロバイダ・モデルの共通型とコールバック定義
+- `src/provider/opencode.go` … OpenCode Go のモデル定義、ツール・reasoning 変換、セッションヘッダー
+- `src/chatgpt.go` … 既定の ChatGPT 接続の認証ヘッダーとカタログ取得リクエスト
+- `src/responses.go` … Responses API 共通のリクエスト・レスポンス処理
+- `src/reasoning.go` … reasoning の接続先識別と他プロバイダ由来の状態の除去
+- `src/api.go` … ChatGPT API 中継（`CODEX_API_BASE_URL` の受け先）。利用枠レスポンスだけを書き換える
+- `src/*_test.go` / `src/provider/*_test.go` … カタログ合成、転送・認証分離、reasoning 変換、利用枠サニタイズのテスト
+- `deploy/router.example.json` … Responses API 互換プロバイダを追加する設定例
 - `deploy/codex-go-router.service` … systemd ユーザーサービスの雛形
 - `deploy/com.codex.go-router-env.plist` … macOS で `CODEX_API_BASE_URL` を永続化する LaunchAgent の雛形
 - `README.md` … 仕組み、手動セットアップ、設定一覧、注意点
