@@ -175,17 +175,20 @@ Codex デスクトップアプリや app-server が起動中なら再起動し�
 
 ## リポジトリの構成
 
-- `src/main.go` … 設定を読み込み、モデル中継とバックエンド API 中継を起動する
-- `src/config.go` … `.env`・プロバイダ設定の読み込みと設定ファイルのパス解決
-- `src/router.go` … モデルカタログの合成、接続先の選択、HTTP / SSE の中継
+- `src/main.go` … 設定を読み込み、モデル中継とバックエンド API 中継を起動する。`claude login|status` サブコマンドもここ
+- `src/config.go` … `.env`・環境変数・プロバイダ設定の読み込みと `CODEX_HOME` 配下のパス解決
+- `src/router.go` … 有効なプロバイダ一覧を持つ `router` と、モデル名からの接続先の選択
+- `src/catalog.go` … `/models`。ChatGPT のカタログにプロバイダのモデルを合成する
+- `src/responses.go` … `/responses`。リクエストの転送、プロバイダ応答の変換、HTTP / SSE の中継
 - `src/provider/provider.go` … 外部プロバイダ・モデルの共通型とコールバック定義
 - `src/provider/opencode.go` … OpenCode Go のモデル定義、ツール・reasoning 変換、セッションヘッダー
-- `src/provider/inception.go` / `src/provider/inception_stream.go` … Mercury 3 の Chat Completions / Responses 変換。`INCEPTION_API_KEY` があるときだけ `inception-labs/mercury-3` を有効化する
-- `src/chatgpt.go` … 既定の ChatGPT 接続の認証ヘッダーとカタログ取得リクエスト
-- `src/responses.go` … Responses API 共通のリクエスト・レスポンス処理
+- `src/provider/inception.go` … Mercury 3 の Chat Completions / Responses 変換。`INCEPTION_API_KEY` があるときだけ `inception-labs/mercury-3` を有効化する
+- `src/provider/response_stream.go` … Chat Completions 形式の差分から Responses の応答・SSE を組み立てる共通処理（Inception と Claude が使う）
+- `src/provider/claude.go` / `src/provider/claude_agent.py` … Claude Agent SDK の起動と応答変換
+- `src/chatgpt.go` … 既定の ChatGPT 接続の送信先・認証ヘッダーとカタログ取得リクエスト
 - `src/reasoning.go` … reasoning の接続先識別と他プロバイダ由来の状態の除去
 - `src/api.go` … ChatGPT API 中継（`CODEX_API_BASE_URL` の受け先）。利用枠レスポンスだけを書き換える
-- `src/*_test.go` / `src/provider/*_test.go` … カタログ合成、転送・認証分離、reasoning 変換、利用枠サニタイズのテスト
+- `src/*_test.go` / `src/provider/*_test.go` … 対応するソースファイルごとのテスト（`config_test.go` は設定読み込みとカタログへの反映、`responses_test.go` は転送・認証分離・reasoning の往復）
 - `deploy/router.example.json` … Responses API 互換プロバイダを追加する設定例
 - `deploy/codex-go-router.service` … systemd ユーザーサービスの雛形
 - `deploy/com.codex.go-router-env.plist` … macOS で `CODEX_API_BASE_URL` を永続化する LaunchAgent の雛形

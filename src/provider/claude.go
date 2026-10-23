@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 )
 
@@ -24,10 +23,11 @@ func ClaudeAuth(python, action string) error {
 	return cmd.Run()
 }
 
-func ClaudeAgent(python string) Provider {
+// sessionRoot stores SDK session IDs per Codex thread so later turns can resume.
+func ClaudeAgent(python, sessionRoot string) Provider {
 	p := Provider{ID: "claude", Name: "Claude Agent SDK", Prefix: "claude/", BaseURL: "http://claude-agent.local"}
 	p.RoundTrip = func(_ *http.Client, request *http.Request) (*http.Response, error) {
-		return claudeRoundTrip(python, request)
+		return claudeRoundTrip(python, sessionRoot, request)
 	}
 	return p
 }
@@ -61,7 +61,7 @@ func (b *claudeBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-func claudeRoundTrip(python string, request *http.Request) (*http.Response, error) {
+func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.Response, error) {
 	defer request.Body.Close()
 	var payload map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -72,15 +72,7 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 	if payload["_thread_id"] == "" {
 		payload["_thread_id"] = request.Header.Get("Session-Id")
 	}
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		codexHome = filepath.Join(home, ".codex")
-	}
-	payload["_session_root"] = filepath.Join(codexHome, "claude-agent-sessions")
+	payload["_session_root"] = sessionRoot
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -140,7 +132,7 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 
 func readClaudeEvents(reader io.Reader, state *responseStream) error {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64<<10), 16<<20)
+	scanner.Buffer(make([]byte, 64<<10), maxEventLineBytes)
 	var finish string
 	var usage responseUsage
 	for scanner.Scan() {

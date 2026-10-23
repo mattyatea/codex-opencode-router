@@ -13,16 +13,20 @@ import (
 	"strings"
 )
 
-// defaultEnvPath mirrors Codex's own CODEX_HOME convention so the router reads
-// the same .env file as the Codex installation on this machine.
-func defaultEnvPath() string {
+// codexHome mirrors Codex's own CODEX_HOME convention so the router reads
+// the same files as the Codex installation on this machine.
+func codexHome() string {
 	if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
-		return filepath.Join(codexHome, ".env")
+		return codexHome
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".codex", ".env")
+		return filepath.Join(home, ".codex")
 	}
-	return ".env"
+	return ""
+}
+
+func defaultEnvPath() string {
+	return filepath.Join(codexHome(), ".env")
 }
 
 func loadEnv(path string) map[string]string {
@@ -48,11 +52,26 @@ func loadEnv(path string) map[string]string {
 	return env
 }
 
+// lookupEnv prefers the .env file over the process environment.
+func lookupEnv(env map[string]string, name string) string {
+	if value := env[name]; value != "" {
+		return value
+	}
+	return os.Getenv(name)
+}
+
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func providerConfigPath() string {
 	if path := os.Getenv("ROUTER_CONFIG"); path != "" {
 		return path
 	}
-	return filepath.Join(filepath.Dir(defaultEnvPath()), "router.json")
+	return filepath.Join(codexHome(), "router.json")
 }
 
 func loadProviders(path string, env map[string]string) ([]provider.Provider, error) {
@@ -67,12 +86,7 @@ func loadProviders(path string, env map[string]string) ([]provider.Provider, err
 	} else if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("read provider config: %w", err)
 	}
-	key := func(name string) string {
-		if value := env[name]; value != "" {
-			return value
-		}
-		return os.Getenv(name)
-	}
+	key := func(name string) string { return lookupEnv(env, name) }
 	result := []provider.Provider{}
 	if value := key("OPENCODE_GO_API_KEY"); value != "" {
 		p := provider.OpenCode()
@@ -85,7 +99,7 @@ func loadProviders(path string, env map[string]string) ([]provider.Provider, err
 		result = append(result, p)
 	}
 	if python := key("CLAUDE_AGENT_PYTHON"); python != "" {
-		p := provider.ClaudeAgent(python)
+		p := provider.ClaudeAgent(python, filepath.Join(codexHome(), "claude-agent-sessions"))
 		p.Models, err = provider.DiscoverClaudeModels(python)
 		if err != nil {
 			return nil, err

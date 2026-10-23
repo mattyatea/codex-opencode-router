@@ -265,18 +265,18 @@ systemctl --user disable --now codex-go-router.service               # 中継を
 
 ```text
 src/
-  main.go              # サーバー起動
-  config.go            # 環境変数・プロバイダ設定の読み込み
-  router.go            # カタログ合成と HTTP / SSE 中継
+  main.go              # サーバー起動と claude login|status
+  config.go            # 環境変数・プロバイダ設定の読み込み、CODEX_HOME 配下のパス
+  router.go            # 有効なプロバイダ一覧とモデル名からの振り分け
+  catalog.go           # /models のカタログ合成
+  responses.go         # /responses の転送と HTTP / SSE 中継
   api.go               # ChatGPT バックエンド API 中継
-  chatgpt.go           # 既定の ChatGPT 接続
-  responses.go         # Responses API 共通のリクエスト・応答処理
+  chatgpt.go           # 既定の ChatGPT 接続（送信先・認証ヘッダー・カタログ取得）
   reasoning.go         # 接続先ごとの reasoning 分離
   provider/
     provider.go        # 外部プロバイダ・モデルの共通型とコールバック定義
     opencode.go        # OpenCode Go 固有の処理
-    inception.go       # Mercury 3 のリクエスト変換・接続
-    inception_stream.go # Mercury 3 の応答の読み込み
+    inception.go       # Mercury 3 のリクエスト・応答変換
     response_stream.go # プロバイダ共通の Responses / SSE 出力
     claude.go          # Agent SDK の起動・応答変換
     claude_agent.py    # SDK 認証・Codex ツールの提示と呼び出し返却

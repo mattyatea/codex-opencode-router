@@ -12,54 +12,146 @@ import (
 	"testing"
 )
 
-func TestInceptionKeyAndCatalog(t *testing.T) {
-	t.Setenv("OPENCODE_GO_API_KEY", "")
-	t.Setenv("ROUTER_CONFIG", "")
-	for _, source := range []string{"missing", "file", "process"} {
-		t.Run(source, func(t *testing.T) {
-			t.Setenv("INCEPTION_API_KEY", "")
-			env := map[string]string{}
-			if source == "file" {
-				env["INCEPTION_API_KEY"] = "file-key"
-				t.Setenv("INCEPTION_API_KEY", "process-key")
-			} else if source == "process" {
-				t.Setenv("INCEPTION_API_KEY", "process-key")
+func TestCustomProviderRoutingAndReasoningRoundTrip(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			var received map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer provider-key" {
+					t.Errorf("wrong endpoint or credentials")
+				}
+				for _, name := range []string{"ChatGPT-Account-Id", "Cookie", "X-Opencode-Session"} {
+					if r.Header.Get(name) != "" {
+						t.Errorf("unexpected forwarded header %s", name)
+					}
+				}
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+					t.Error(err)
+				}
+				if received["model"] != "model-a" {
+					t.Errorf("model = %v", received["model"])
+				}
+				if !stream {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, `{"output":[{"type":"reasoning","id":"rs_custom","summary":[],"encrypted_content":"original-state"}]}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_custom\",\"summary\":[],\"encrypted_content\":\"original-state\"}}\n\n")
+			}))
+			defer server.Close()
+			rt := newRouter([]provider.Provider{withReasoningTags(provider.Provider{ID: "mine", BaseURL: server.URL + "/v1", APIKey: "provider-key"})})
+			send := func(input []any) *httptest.ResponseRecorder {
+				t.Helper()
+				body, _ := json.Marshal(map[string]any{"model": "mine-model-a", "input": input})
+				r := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(string(body)))
+				r.Header.Set("Authorization", "Bearer chatgpt-key")
+				r.Header.Set("ChatGPT-Account-Id", "account")
+				r.Header.Set("Cookie", "session=private")
+				w := httptest.NewRecorder()
+				rt.handleResponses(w, r)
+				if w.Code != http.StatusOK {
+					t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+				}
+				return w
 			}
-			loaded, err := loadProviders(filepath.Join(t.TempDir(), "router.json"), env)
-			if err != nil {
-				t.Fatal(err)
+			w := send([]any{})
+			var item map[string]any
+			if stream {
+				var event map[string]any
+				data := strings.Split(strings.Split(w.Body.String(), "data: ")[1], "\n")[0]
+				if err := json.Unmarshal([]byte(data), &event); err != nil {
+					t.Fatal(err)
+				}
+				item = event["item"].(map[string]any)
+			} else {
+				var response map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				item = response["output"].([]any)[0].(map[string]any)
 			}
-			original := providers
-			providers = loaded
-			t.Cleanup(func() { providers = original })
-			encoded, err := buildUnionCatalog(map[string]any{"models": []any{map[string]any{"slug": baseCatalogModel, "input_modalities": []any{"text", "image"}, "tool_mode": "code_mode_only"}}})
-			if err != nil {
-				t.Fatal(err)
+			if !strings.HasPrefix(item["encrypted_content"].(string), "codex-router:") {
+				t.Fatal("reasoning provider was not tagged")
 			}
-			var catalog map[string]any
-			if err := json.Unmarshal(encoded, &catalog); err != nil {
-				t.Fatal(err)
+			for _, destination := range []string{"other", "go", ""} {
+				payload := map[string]any{"input": []any{item}}
+				stripForeignReasoning(payload, destination)
+				if len(payload["input"].([]any)) != 0 {
+					t.Fatalf("reasoning leaked to %q", destination)
+				}
 			}
-			model := findModel(catalog["models"].([]any), "inception-labs/mercury-3")
-			if source == "missing" {
-				if len(loaded) != 0 || model != nil {
-					t.Fatal("Inception enabled without an API key")
+			send([]any{item})
+			input := received["input"].([]any)
+			if len(input) != 1 || input[0].(map[string]any)["encrypted_content"] != "original-state" {
+				t.Fatalf("reasoning not restored: %v", input)
+			}
+		})
+	}
+}
+
+func TestOpenCodeRouting(t *testing.T) {
+	const jsonResponse = "{\n  \"output\": [{\"type\": \"reasoning\", \"encrypted_content\": \"go-state\"}]\n}"
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/zen/go/v1/responses" || r.Header.Get("Authorization") != "Bearer go-key" {
+					t.Error("wrong OpenCode endpoint or credentials")
+				}
+				if r.Header.Get("X-Opencode-Session") != "conversation" {
+					t.Errorf("session = %q", r.Header.Get("X-Opencode-Session"))
+				}
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				if payload["model"] != "deepseek-v4.1-flash" {
+					t.Errorf("model = %v", payload["model"])
+				}
+				tool := payload["tools"].([]any)[0].(map[string]any)
+				parameters := tool["parameters"].(map[string]any)
+				required, _ := parameters["required"].([]any)
+				if len(required) != 1 || required[0] != "query" {
+					t.Errorf("tool schema was not normalized: %v", parameters)
+				}
+				if !stream {
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, jsonResponse)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"content_index\":0,\"delta\":\"step\"}\n\n")
+			}))
+			defer server.Close()
+			p := provider.OpenCode()
+			p.BaseURL = server.URL + "/zen/go/v1"
+			p.APIKey = "go-key"
+			rt := newRouter([]provider.Provider{p})
+			r := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"go-deepseek-v4.1-flash","tools":[{"type":"function","parameters":{"properties":{"query":{"type":"string"}}}}]}`))
+			r.Header.Set("Session-Id", "conversation")
+			r.Header.Set("Authorization", "Bearer chatgpt-key")
+			w := httptest.NewRecorder()
+			rt.handleResponses(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			if !stream {
+				if w.Body.String() != jsonResponse {
+					t.Fatalf("OpenCode JSON response was changed: %s", w.Body.String())
 				}
 				return
 			}
-			key := "process-key"
-			if source == "file" {
-				key = "file-key"
+			var event map[string]any
+			data := strings.Split(strings.Split(w.Body.String(), "data: ")[1], "\n")[0]
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				t.Fatal(err)
 			}
-			if len(loaded) != 1 || loaded[0].APIKey != key {
-				t.Fatal("Inception key source or precedence is incorrect")
+			if event["type"] != "response.reasoning_summary_text.delta" || event["summary_index"] != float64(0) || event["delta"] != "step" {
+				t.Fatalf("reasoning event was not converted: %v", event)
 			}
-			if model == nil || model["context_window"] != float64(1_000_000) || model["tool_mode"] != nil {
-				t.Fatalf("unexpected Mercury catalog entry: %v", model)
-			}
-			modalities := model["input_modalities"].([]any)
-			if len(modalities) != 1 || modalities[0] != "text" || len(model["supported_reasoning_levels"].([]any)) != 4 {
-				t.Fatalf("unexpected Mercury capabilities: %v", model)
+			if _, ok := event["content_index"]; ok {
+				t.Fatal("content_index was not replaced")
 			}
 		})
 	}
@@ -156,9 +248,7 @@ func TestInceptionToolRoundTrip(t *testing.T) {
 			}
 			p := loaded[0]
 			p.BaseURL = server.URL + "/v1"
-			original := providers
-			providers = []provider.Provider{p}
-			t.Cleanup(func() { providers = original })
+			rt := newRouter([]provider.Provider{p})
 			input := []any{map[string]any{"role": "developer", "content": "developer instructions"}, map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": "test"}}}}
 			for i := 0; i < 2; i++ {
 				payload := map[string]any{
@@ -172,7 +262,7 @@ func TestInceptionToolRoundTrip(t *testing.T) {
 				r.Header.Set("Cookie", "private")
 				r.Header.Set("ChatGPT-Account-Id", "private")
 				w := httptest.NewRecorder()
-				handleResponses(w, r)
+				rt.handleResponses(w, r)
 				if w.Code != http.StatusOK {
 					t.Fatalf("status %d: %s", w.Code, w.Body.String())
 				}

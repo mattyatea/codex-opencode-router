@@ -23,26 +23,22 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const (
-	apiListenDefault = "127.0.0.1:8000,[::1]:8000"
-	apiMaxBodyBytes  = 8 << 20
-)
+const apiMaxBodyBytes = 8 << 20
 
 type apiContextKey int
 
 const apiPathKey apiContextKey = 0
 
-// serveAPI starts the ChatGPT API base listeners. It is called from main
-// alongside the model router so both share one process.
-func serveAPI() {
+// serveAPI starts the ChatGPT API base listeners on comma-separated addresses.
+// It is called from main alongside the model router so both share one process.
+func serveAPI(addresses string) {
 	handler := newAPIProxy()
-	for _, address := range strings.Split(envOr("ROUTER_API_LISTEN", apiListenDefault), ",") {
+	for _, address := range strings.Split(addresses, ",") {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			continue
@@ -240,11 +236,4 @@ func newSSERewriter(body io.ReadCloser) io.ReadCloser {
 		}
 	}()
 	return reader
-}
-
-func envOr(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }

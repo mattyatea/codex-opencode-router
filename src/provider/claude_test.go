@@ -42,7 +42,7 @@ EVENTS
 				t.Fatal(err)
 			}
 			request := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(fmt.Sprintf(`{"model":"sonnet","input":"hello","stream":%t}`, stream)))
-			response, err := ClaudeAgent(python).RoundTrip(nil, request)
+			response, err := ClaudeAgent(python, t.TempDir()).RoundTrip(nil, request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +114,7 @@ exit 1
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"sonnet","input":"hello","stream":true}`))
-	response, err := ClaudeAgent(python).RoundTrip(nil, request)
+	response, err := ClaudeAgent(python, t.TempDir()).RoundTrip(nil, request)
 	if err != nil {
 		t.Fatal(err)
 	}
