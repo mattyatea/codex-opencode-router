@@ -114,7 +114,9 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 			err = fmt.Errorf("Claude Agent SDK process failed; check SDK installation and Claude login: %w", waitErr)
 		}
 		if err != nil {
-			state.emit("error", map[string]any{"code": "claude_agent_error", "message": err.Error()})
+			state.response["status"] = "failed"
+			state.response["error"] = map[string]any{"code": "claude_agent_error", "message": err.Error()}
+			state.emit("response.failed", map[string]any{"response": state.response})
 			return nil, err
 		}
 		return json.Marshal(state.response)

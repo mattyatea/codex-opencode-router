@@ -102,3 +102,46 @@ func TestClaudeStreamFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeProcessFailureReportsCause(t *testing.T) {
+	python := filepath.Join(t.TempDir(), "python")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"error","message":"authentication_failed: run codex-go-router claude login"}'
+exit 1
+`
+	if err := os.WriteFile(python, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"sonnet","input":"hello","stream":true}`))
+	response, err := ClaudeAgent(python).RoundTrip(nil, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(response.Body)
+	if readErr == nil {
+		t.Fatal("SDK failure should propagate to the transport")
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		var event struct {
+			Type     string `json:"type"`
+			Response struct {
+				Status string `json:"status"`
+				Error  struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(line[6:], &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == "response.failed" && event.Response.Status == "failed" && strings.Contains(event.Response.Error.Message, "claude login") {
+			return
+		}
+	}
+	t.Fatalf("missing actionable response.failed: %s", body)
+}
