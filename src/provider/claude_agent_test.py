@@ -30,6 +30,9 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
             "claude-sonnet-5-5": {"maxTokens": 1000000, "rawMaxTokens": 1000000, "autoCompactThreshold": 967000},
             "claude-haiku-5-5": {"maxTokens": 150000, "rawMaxTokens": 200000, "autoCompactThreshold": 117000},
         }
+        limits["claude-opus-4-6"] = limits["claude-sonnet-5-5"]
+        hidden = ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5",
+                  "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"]
         queried = []
 
         class Client:
@@ -43,7 +46,7 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
                 pass
 
             async def get_server_info(self):
-                return {"models": [{"resolvedModel": model} for model in [*limits, next(iter(limits))]]}
+                return {"models": [{"resolvedModel": model} for model in [*limits, *hidden, next(iter(limits))]]}
 
             async def get_context_usage(self):
                 queried.append(self.model)
@@ -54,6 +57,7 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
             await bridge.discover_models()
         models = json.loads(output.getvalue())
         self.assertEqual(queried, list(limits))
+        self.assertEqual([model["id"] for model in models], list(limits))
         for model in models:
             usage = limits[model["id"]]
             self.assertEqual(model["context_window"], usage["maxTokens"])

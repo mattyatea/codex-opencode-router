@@ -142,6 +142,9 @@ async def discover_models():
             resolved = model.get("resolvedModel")
             if not resolved or resolved in seen:
                 continue
+            # Hide the older catalog entries requested by the user, keeping Opus 4.6.
+            if re.fullmatch(r"claude-(?:haiku-4-5|sonnet-5|opus-5|fable-5|opus-4-8|opus-4-7|sonnet-4-6)(?:-\d{8})?", resolved):
+                continue
             seen.add(resolved)
             label = "CC/" + resolved.removeprefix("claude-").replace("-", " ").title()
             # The final numeric segments form the version, e.g. opus-5-5 -> Opus 5.5.
