@@ -104,6 +104,9 @@ func buildUnionCatalog(catalog map[string]any) ([]byte, error) {
 				}
 				clone["max_context_window"] = maxWindow
 			}
+			if spec.AutoCompactTokenLimit != nil {
+				clone["auto_compact_token_limit"] = *spec.AutoCompactTokenLimit
+			}
 			if spec.ClearToolMode {
 				clone["tool_mode"] = nil
 			}

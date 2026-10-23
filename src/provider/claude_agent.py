@@ -137,18 +137,27 @@ async def discover_models():
             extra_args={"no-session-persistence": None},
         )) as client:
             info = await client.get_server_info()
-    models, seen = [], set()
-    for model in (info or {}).get("models", []):
-        resolved = model.get("resolvedModel")
-        if not resolved or resolved in seen:
-            continue
-        seen.add(resolved)
-        label = "Claude " + resolved.removeprefix("claude-").replace("-", " ").title()
-        # The final numeric segments form the version, e.g. opus-5-5 -> Opus 5.5.
-        label = re.sub(r"(\d) (\d)", r"\1.\2", label)
-        models.append({"id": resolved, "name": label, "clear_tool_mode": True,
-                       "context_window": 200000, "input_modalities": ["text"],
-                       "reasoning_levels": model.get("supportedEffortLevels") or ["low"]})
+        models, seen = [], set()
+        for model in (info or {}).get("models", []):
+            resolved = model.get("resolvedModel")
+            if not resolved or resolved in seen:
+                continue
+            seen.add(resolved)
+            label = "Claude " + resolved.removeprefix("claude-").replace("-", " ").title()
+            # The final numeric segments form the version, e.g. opus-5-5 -> Opus 5.5.
+            label = re.sub(r"(\d) (\d)", r"\1.\2", label)
+            async with ClaudeSDKClient(options=ClaudeAgentOptions(
+                model=resolved, cwd=cwd, tools=[], setting_sources=[], strict_mcp_config=True,
+                extra_args={"no-session-persistence": None},
+            )) as client:
+                usage = await client.get_context_usage()
+            if usage["maxTokens"] <= 0 or usage["rawMaxTokens"] <= 0:
+                raise RuntimeError(f"Claude SDK returned invalid context limits for {resolved}")
+            models.append({"id": resolved, "name": label, "clear_tool_mode": True,
+                           "context_window": usage["maxTokens"],
+                           "max_context_window": usage["rawMaxTokens"],
+                           "auto_compact_token_limit": usage.get("autoCompactThreshold"), "input_modalities": ["text"],
+                           "reasoning_levels": model.get("supportedEffortLevels") or ["low"]})
     if not models:
         raise RuntimeError("Claude SDK returned no resolved models")
     print(json.dumps(models), flush=True)

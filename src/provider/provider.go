@@ -4,13 +4,14 @@ import "net/http"
 
 // Context windows override the ChatGPT catalog template used by Codex.
 type Model struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	ClearToolMode    bool     `json:"clear_tool_mode"`
-	ContextWindow    int      `json:"context_window"`
-	MaxContextWindow int      `json:"max_context_window"`
-	InputModalities  []string `json:"input_modalities,omitempty"`
-	ReasoningLevels  []string `json:"reasoning_levels,omitempty"`
+	AutoCompactTokenLimit *int     `json:"auto_compact_token_limit,omitempty"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	ClearToolMode         bool     `json:"clear_tool_mode"`
+	ContextWindow         int      `json:"context_window"`
+	MaxContextWindow      int      `json:"max_context_window"`
+	InputModalities       []string `json:"input_modalities,omitempty"`
+	ReasoningLevels       []string `json:"reasoning_levels,omitempty"`
 }
 
 // Provider describes an external model endpoint and its protocol adjustments.

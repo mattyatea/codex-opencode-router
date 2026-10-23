@@ -180,7 +180,9 @@ codex exec --model claude/claude-sonnet-5-5 'Reply with OK only.'
 
 対応する SDK セッション ID と履歴照合用ハッシュは `$CODEX_HOME/claude-agent-sessions/`（既定は `~/.codex/claude-agent-sessions/`）に保存します。会話本文は Claude Code 標準のセッション保存先に残ります。同じ会話・モデルの更新はロックで直列化します。Codex での履歴の巻き戻し・圧縮、システム指示の変更、他モデルの応答の挿入、失敗・キャンセル後は保存済み履歴との対応を破棄し、Codex の履歴から新しいセッションを作ります。その初回だけ、既存の assistant / tool 履歴は JSON の会話記録として渡します。会話識別ヘッダーがないクライアントは永続化せず、毎回独立したセッションになります。
 
-コンテキストは保守的に 200k としています。画像、OpenAI サーバー側の検索・画像生成ツール、構造化出力、`previous_response_id` による継続には対応していません。
+コンテキストの有効上限・最大上限・自動圧縮の閾値は、起動時に各モデルの SDK `get_context_usage()` から取得します。`CLAUDE_CODE_DISABLE_1M_CONTEXT` など SDK の環境設定も反映されます。Codex 自身の安全マージンと圧縮制御も適用されるため、Claude Code と圧縮のタイミングが一致するとは限りません。要求された最大出力は SDK に渡し、モデルの出力上限への制限は Claude Code に任せます。
+
+画像、OpenAI サーバー側の検索・画像生成ツール、構造化出力、`previous_response_id` による継続には対応していません。
 
 変換とツール実行境界のテストは次で実行できます。サブスクへの実接続は上の `codex exec` で別途確認してください。
 

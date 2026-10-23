@@ -25,6 +25,41 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.session_root = directory.name
 
+    async def test_catalog_uses_each_resolved_models_sdk_context_limits(self):
+        limits = {
+            "claude-sonnet-5-5": {"maxTokens": 1000000, "rawMaxTokens": 1000000, "autoCompactThreshold": 967000},
+            "claude-haiku-5-5": {"maxTokens": 150000, "rawMaxTokens": 200000, "autoCompactThreshold": 117000},
+        }
+        queried = []
+
+        class Client:
+            def __init__(self, *, options):
+                self.model = options.model
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def get_server_info(self):
+                return {"models": [{"resolvedModel": model} for model in [*limits, next(iter(limits))]]}
+
+            async def get_context_usage(self):
+                queried.append(self.model)
+                return limits[self.model]
+
+        output = io.StringIO()
+        with patch.object(bridge, "ClaudeSDKClient", Client), contextlib.redirect_stdout(output):
+            await bridge.discover_models()
+        models = json.loads(output.getvalue())
+        self.assertEqual(queried, list(limits))
+        for model in models:
+            usage = limits[model["id"]]
+            self.assertEqual(model["context_window"], usage["maxTokens"])
+            self.assertEqual(model["max_context_window"], usage["rawMaxTokens"])
+            self.assertEqual(model["auto_compact_token_limit"], usage["autoCompactThreshold"])
+
     async def test_codex_tool_call_and_result_round_trip(self):
         tool = {"type": "function", "name": "exec_command", "parameters": {
             "type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}
