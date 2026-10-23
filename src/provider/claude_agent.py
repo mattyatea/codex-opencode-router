@@ -217,6 +217,18 @@ async def never_execute(_args):
     raise RuntimeError("Codex tools must be executed by Codex, not by the SDK")
 
 
+def completion(result, calls, stop_reason):
+    if result.is_error and not (calls and result.subtype == "error_max_turns"):
+        raise RuntimeError("Claude SDK request failed: " + (result.result or "; ".join(result.errors or []) or result.subtype))
+    usage = result.usage or {}
+    cached = usage.get("cache_read_input_tokens", 0)
+    input_tokens = usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0) + cached
+    output_tokens = usage.get("output_tokens", 0)
+    return {"type": "complete", "finish": "length" if stop_reason == "max_tokens" else "stop",
+            "usage": {"prompt_tokens": input_tokens, "completion_tokens": output_tokens,
+                      "total_tokens": input_tokens + output_tokens, "cached_input_tokens": cached}}
+
+
 async def defer_tool(_input, _tool_use_id, _context):
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "defer"}}
 
@@ -348,17 +360,14 @@ async def run(payload, query_fn=query):
                         streamed_text = False
                     elif isinstance(message, ResultMessage):
                         result = message
+                        # Report completion now: closing the SDK waits ~0.7s for the CLI to exit.
+                        # The session lock stays held until the state below is saved.
+                        emit(completion(result, calls, stop_reason))
         except ResultError:
             if not (calls and result and result.subtype == "error_max_turns"):
                 raise
         if result is None:
             raise RuntimeError("Claude SDK ended without a result")
-        if result.is_error and not (calls and result.subtype == "error_max_turns"):
-            raise RuntimeError("Claude SDK request failed: " + (result.result or "; ".join(result.errors or []) or result.subtype))
-        usage = result.usage or {}
-        cached = usage.get("cache_read_input_tokens", 0)
-        input_tokens = usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0) + cached
-        output_tokens = usage.get("output_tokens", 0)
         if state_path and resumable:
             output = ([{"role": "assistant", "content": "".join(output_text)}] if output_text else []) + output_calls
             state = {"session_id": result.session_id, "system": fingerprint(system),
@@ -367,9 +376,6 @@ async def run(payload, query_fn=query):
             temporary.write_text(json.dumps(state))
             temporary.chmod(0o600)
             temporary.replace(state_path)
-        emit({"type": "complete", "finish": "length" if stop_reason == "max_tokens" else "stop",
-              "usage": {"prompt_tokens": input_tokens, "completion_tokens": output_tokens,
-                        "total_tokens": input_tokens + output_tokens, "cached_input_tokens": cached}})
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeAuthCommand(t *testing.T) {
@@ -94,12 +95,43 @@ func TestClaudeStreamFailure(t *testing.T) {
 	} {
 		var output bytes.Buffer
 		state := newResponseStream(&output, "sonnet", nil)
-		if err := readClaudeEvents(strings.NewReader(input), state); err == nil {
+		if _, _, err := readClaudeEvents(strings.NewReader(input), state); err == nil {
 			t.Fatal("failed/truncated stream succeeded")
 		}
 		if strings.Contains(output.String(), "response.completed") {
 			t.Fatal("failed stream emitted completion")
 		}
+	}
+}
+
+// The bridge keeps saving session state while the SDK shuts down; Codex must not wait for that.
+func TestClaudeRespondsBeforeBridgeExits(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			python := filepath.Join(t.TempDir(), "python")
+			script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"delta","delta":{"content":"OK"}}' '{"type":"complete","finish":"stop","usage":{}}'
+sleep 3
+`
+			if err := os.WriteFile(python, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			started := time.Now()
+			request := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(fmt.Sprintf(`{"model":"sonnet","input":"hello","stream":%t}`, stream)))
+			response, err := ClaudeAgent(python, t.TempDir()).RoundTrip(nil, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil || !strings.Contains(string(body), `"status":"completed"`) {
+				t.Fatalf("response = %s, err = %v", body, err)
+			}
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("response waited %v for the bridge to exit", elapsed)
+			}
+		})
 	}
 }
 
