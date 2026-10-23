@@ -56,6 +56,7 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(bridge, "ClaudeSDKClient", Client), contextlib.redirect_stdout(output):
             await bridge.discover_models()
         models = json.loads(output.getvalue())
+        self.assertTrue(all(model["input_modalities"] == ["text", "image"] for model in models))
         self.assertEqual(queried, list(limits))
         self.assertEqual([model["id"] for model in models], list(limits))
         for model in models:
@@ -117,9 +118,12 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
             yield StreamEvent(uuid="event", session_id="test", event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": "/workspace"}})
             yield AssistantMessage(model="sonnet", content=[
                 TextBlock(text="/workspace"),
-                ToolUseBlock(id="call_3", name="mcp__codex__" + bridge.tool_alias("exec_command"), input={"cmd": "ls"}),
+                ToolUseBlock(id="call_3", name="exec_command", input={"cmd": "ls"}),
             ])
-            yield result()
+            terminal = result()
+            terminal.subtype, terminal.is_error = "error_max_turns", True
+            yield terminal
+            raise bridge.ResultError("maximum turns", {"subtype": "error_max_turns"}, exit_code=1)
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -127,6 +131,21 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
         events = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual([e["delta"]["content"] for e in events if "content" in e.get("delta", {})], ["/workspace"])
         self.assertEqual(events[1]["delta"]["tool_calls"][0]["function"]["name"], "exec_command")
+
+        self.assertEqual(list(pathlib.Path(self.session_root).rglob("state.json")), [])
+        request["input"] += [
+            {"role": "assistant", "content": "/workspace"},
+            {"type": "function_call", "call_id": "call_3", "name": "exec_command", "arguments": '{"cmd":"ls"}'},
+            {"type": "function_call_output", "call_id": "call_3", "output": "file.txt"},
+        ]
+        async def recovered(*, prompt, options):
+            self.assertIsNone(options.resume)
+            content = (await anext(prompt))["message"]["content"]
+            self.assertIn("file.txt", content)
+            self.assertNotIn("No such tool", content)
+            yield result()
+        with contextlib.redirect_stdout(io.StringIO()):
+            await bridge.run(request, query_fn=recovered)
 
     async def test_additional_tool_redefinition_and_tool_choice_none(self):
         old = {"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}
@@ -147,6 +166,51 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
                 {"type": "additional_tools", "role": "developer", "tools": [namespace(new)]},
                 {"role": "user", "content": "hello"},
             ]}, query_fn=inspect)
+
+    async def test_images_survive_initial_resume_and_bootstrap(self):
+        image = {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="}
+        content = [{"type": "input_text", "text": "Describe"}, image]
+        expected = bridge.multimodal_content(content)
+        request = {"model": "sonnet", "input": [{"role": "user", "content": content}],
+                   "_thread_id": "images", "_session_root": self.session_root}
+
+        async def initial(*, prompt, options):
+            self.assertIsNone(options.resume)
+            self.assertEqual((await anext(prompt))["message"]["content"], expected)
+            yield AssistantMessage(model="sonnet", content=[TextBlock(text="Seen")])
+            yield result()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            await bridge.run(request, query_fn=initial)
+        request["input"] += [{"role": "assistant", "content": "Seen"}, {"role": "user", "content": content}]
+
+        async def resumed(*, prompt, options):
+            self.assertEqual(options.resume, "test")
+            self.assertEqual((await anext(prompt))["message"]["content"], expected)
+            yield result()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            await bridge.run(request, query_fn=resumed)
+        _, history = bridge.conversation(request)
+        before = bridge.history_hashes(history)
+        blocks = bridge.prompt_content(history, bootstrap=True)
+        self.assertEqual([b for b in blocks if b["type"] == "image"], [expected[1], expected[1]])
+        self.assertNotIn("aW1hZ2U=", blocks[0]["text"])
+        self.assertEqual(bridge.history_hashes(history), before)
+        _, results = bridge.conversation({"input": [{"type": "function_call_output", "call_id": "image-call", "output": content}]})
+        self.assertEqual(bridge.prompt_content(results), [{"type": "tool_result", "tool_use_id": "image-call", "content": expected}])
+
+    def test_tool_names_resolve_only_available_unambiguous_tools(self):
+        tool = {"type": "function", "name": "exec_command"}
+        _, names = bridge.codex_tools([{"type": "namespace", "name": "functions", "tools": [tool]}])
+        for name in ("exec_command", "functions.exec_command", "mcp__codex__" + bridge.tool_alias("exec_command", "functions")):
+            self.assertEqual(bridge.resolve_tool(name, names)["namespace"], "functions")
+        _, ambiguous = bridge.codex_tools([
+            {"type": "namespace", "name": namespace, "tools": [tool]} for namespace in ("functions", "other")])
+        for name, available in (("exec_command", ambiguous), ("missing", names), ("exec_command", {})):
+            with self.assertRaisesRegex(RuntimeError, "unavailable or ambiguous"):
+                bridge.resolve_tool(name, available)
+        self.assertEqual(bridge.resolve_tool("other.exec_command", ambiguous)["namespace"], "other")
 
     async def test_session_isolation_rewind_and_failed_turn(self):
         request = {"model": "claude-sonnet-5-5", "input": "hello", "_thread_id": "one", "_session_root": self.session_root}
@@ -183,7 +247,7 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "authentication_failed: run .*codex-go-router claude login"):
             await bridge.run({"model": "sonnet", "input": "hello"}, query_fn=failed_query)
-        with self.assertRaisesRegex(ValueError, "text input only"):
+        with self.assertRaisesRegex(ValueError, "images require"):
             bridge.conversation({"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "example"}]}]})
 
     async def test_subscription_environment_and_namespaced_schema(self):
