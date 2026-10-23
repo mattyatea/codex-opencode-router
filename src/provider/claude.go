@@ -21,10 +21,11 @@ import (
 	"time"
 )
 
-//go:embed claude_agent.mjs
+//go:embed claude_agent.ts
 var claudeAgentBridge string
 
-// ClaudeBridge runs the embedded Node bridge. Dir holds the node_modules with
+// ClaudeBridge runs the embedded TypeScript bridge with Node, which strips the
+// types at load time (Node 22.18+). Dir holds the node_modules with
 // the Agent SDK; the bridge resolves the SDK and its bundled CLI from there.
 type ClaudeBridge struct {
 	Node string
@@ -33,7 +34,7 @@ type ClaudeBridge struct {
 
 func (b ClaudeBridge) command(ctx context.Context, args ...string) *exec.Cmd {
 	script := claudeAgentBridge + "\nawait main(process.argv.slice(1));\n"
-	cmd := exec.CommandContext(ctx, b.Node, append([]string{"--input-type=module", "-e", script, "--"}, args...)...)
+	cmd := exec.CommandContext(ctx, b.Node, append([]string{"--input-type=module-typescript", "-e", script, "--"}, args...)...)
 	cmd.Dir = b.Dir
 	return cmd
 }

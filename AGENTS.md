@@ -184,8 +184,8 @@ Codex デスクトップアプリや app-server が起動中なら再起動し�
 - `src/provider/opencode.go` … OpenCode Go のモデル定義、ツール・reasoning 変換、セッションヘッダー
 - `src/provider/inception.go` … Mercury 3 の Chat Completions / Responses 変換。`INCEPTION_API_KEY` があるときだけ `inception-labs/mercury-3` を有効化する
 - `src/provider/response_stream.go` … Chat Completions 形式の差分から Responses の応答・SSE を組み立てる共通処理（Inception と Claude が使う）
-- `src/provider/claude.go` / `src/provider/claude_agent.mjs` … Claude Agent SDK（TypeScript 版）の Node ブリッジの起動、セッションのロック、応答変換
-- `package.json` / `package-lock.json` … Node ブリッジが使う Agent SDK のバージョン固定（`npm ci` でインストール、`npm test` でブリッジのテスト）
+- `src/provider/claude.go` / `src/provider/claude_agent.ts` … Claude Agent SDK（TypeScript 版）の Node ブリッジの起動、セッションのロック、応答変換
+- `package.json` / `package-lock.json` … Node ブリッジが使う Agent SDK のバージョン固定（`npm ci` でインストール、`npm test` でブリッジのテスト、`npm run typecheck` で型チェック）。ブリッジは Node の型除去で動くので、`enum` などの消去できない構文は使わない
 - `src/chatgpt.go` … 既定の ChatGPT 接続の送信先・認証ヘッダーとカタログ取得リクエスト
 - `src/reasoning.go` … reasoning の接続先識別と他プロバイダ由来の状態の除去
 - `src/api.go` … ChatGPT API 中継（`CODEX_API_BASE_URL` の受け先）。利用枠レスポンスだけを書き換える

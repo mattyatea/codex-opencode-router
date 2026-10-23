@@ -142,7 +142,7 @@ Mercury 3 は [公式仕様](https://docs.inceptionlabs.ai/get-started/models)�
 
 TypeScript 版 Claude Agent SDK を使う、個人のローカル利用向け接続です。Claude のツール呼び出しは Codex に返し、実行と承認は Codex が担当します。SDK 側の組み込みツールは無効にし、Codex から渡された関数ツールと `apply_patch` などのカスタムツールだけを MCP ツールとして提示します。実行前の SDK フックで呼び出しを保留するため、SDK が別途コマンドやファイル編集を実行することはありません。
 
-Node.js 18 以上を用意して、リポジトリの `package.json` に固定したバージョンの SDK をインストールします。SDK の Node ブリッジは Go バイナリに埋め込まれますが、Node と SDK は実行時にも必要です。Claude Code の CLI は SDK のプラットフォーム別パッケージに同梱されています。
+Node.js 22.18 以上を用意して、リポジトリの `package.json` に固定したバージョンの SDK をインストールします。TypeScript で書いた SDK ブリッジは Go バイナリに埋め込まれ、Node が実行時に型注釈を取り除いて動かします（ビルド手順は不要です）。Node と SDK は実行時にも必要です。Claude Code の CLI は SDK のプラットフォーム別パッケージに同梱されています。
 
 ```sh
 cd ~/.codex/codex-go-router
@@ -192,6 +192,7 @@ OpenAI サーバー側の検索・画像生成ツール、構造化出力、`pre
 ```sh
 go test ./...
 npm test
+npm run typecheck
 ```
 
 ## 好きなプロバイダを追加する
@@ -280,7 +281,7 @@ src/
     inception.go       # Mercury 3 のリクエスト・応答変換
     response_stream.go # プロバイダ共通の Responses / SSE 出力
     claude.go          # Agent SDK の起動・応答変換
-    claude_agent.mjs   # SDK 認証・Codex ツールの提示と呼び出し返却
+    claude_agent.ts    # SDK 認証・Codex ツールの提示と呼び出し返却
 ```
 
 `src/provider/provider.go` に外部プロバイダの共通型 `Provider` とモデルの型 `Model` を定義しています。サービス固有の実装は `src/provider/<名前>.go` に `Provider` を返す関数として置き、`src/config.go` の `loadProviders` から読み込みます。OpenCode Go が実装例です。
