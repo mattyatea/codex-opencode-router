@@ -143,7 +143,7 @@ async def discover_models():
             if not resolved or resolved in seen:
                 continue
             seen.add(resolved)
-            label = "Claude " + resolved.removeprefix("claude-").replace("-", " ").title()
+            label = "CC/" + resolved.removeprefix("claude-").replace("-", " ").title()
             # The final numeric segments form the version, e.g. opus-5-5 -> Opus 5.5.
             label = re.sub(r"(\d) (\d)", r"\1.\2", label)
             async with ClaudeSDKClient(options=ClaudeAgentOptions(

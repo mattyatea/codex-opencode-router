@@ -167,7 +167,7 @@ go build -o ~/.codex/bin/codex-go-router ./src
 
 ログイン後はそのまま再試行できます。認証情報を読むためだけにルーターを再起動する必要はありません。
 
-ビルドしてルーターを再起動すると、SDK が返す正式モデル ID と対応する名前が一覧に追加されます。たとえば `claude/claude-sonnet-5-5` は「Claude Sonnet 5.5」と表示され、送信先にもその正式 ID を使います。利用可能なモデルと reasoning effort は起動時の SDK 情報に従い、固定の別名一覧にはしません。モデル一覧を更新するにはルーターを再起動してください。
+ビルドしてルーターを再起動すると、SDK が返す正式モデル ID と対応する名前が一覧に追加されます。たとえば `claude/claude-sonnet-5-5` は「CC/Sonnet 5.5」と表示され、送信先にもその正式 ID を使います。利用可能なモデルと reasoning effort は起動時の SDK 情報に従い、固定の別名一覧にはしません。モデル一覧を更新するにはルーターを再起動してください。
 
 ```sh
 go build -o ~/.codex/bin/codex-go-router ./src

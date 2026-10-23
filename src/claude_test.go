@@ -19,7 +19,7 @@ func TestClaudeSubscriptionCatalog(t *testing.T) {
 	}
 	python := filepath.Join(t.TempDir(), "python")
 	if err := os.WriteFile(python, []byte(`#!/bin/sh
-printf '%s' '[{"id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5","context_window":500000,"max_context_window":1000000,"auto_compact_token_limit":467000,"clear_tool_mode":true,"reasoning_levels":["low","medium","high","xhigh","max"]}]'
+printf '%s' '[{"id":"claude-sonnet-5-5","name":"CC/Sonnet 5.5","context_window":500000,"max_context_window":1000000,"auto_compact_token_limit":467000,"clear_tool_mode":true,"reasoning_levels":["low","medium","high","xhigh","max"]}]'
 `), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ printf '%s' '[{"id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5","context_wind
 	}
 	for _, name := range []string{"claude-sonnet-5-5"} {
 		model := findModel(catalog["models"].([]any), "claude/"+name)
-		if model == nil || model["tool_mode"] != nil || model["context_window"] != float64(500_000) || model["max_context_window"] != float64(1_000_000) || model["auto_compact_token_limit"] != float64(467_000) || model["display_name"] != "Claude Sonnet 5.5" || len(model["supported_reasoning_levels"].([]any)) != 5 {
+		if model == nil || model["tool_mode"] != nil || model["context_window"] != float64(500_000) || model["max_context_window"] != float64(1_000_000) || model["auto_compact_token_limit"] != float64(467_000) || model["display_name"] != "CC/Sonnet 5.5" || len(model["supported_reasoning_levels"].([]any)) != 5 {
 			t.Fatalf("unexpected Claude catalog: %v", model)
 		}
 	}
