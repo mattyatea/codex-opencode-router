@@ -1,9 +1,9 @@
 # codex-opencode-router
 
-Codex のモデル一覧に ChatGPT、OpenCode Go、自分で設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
+Codex のモデル一覧に ChatGPT、OpenCode Go、Inception Labs の Mercury 3、自分で設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
 
 - `GET /models` … ChatGPT のモデルカタログを取得し、登録済みプロバイダのモデルを追記して返す
-- `POST /responses` … モデル名の `<プロバイダ ID>-` 接頭辞で接続先を選び、それ以外は ChatGPT へ転送する
+- `POST /responses` … モデル名の `go-`・`inception-labs/`・設定した `<プロバイダ ID>-` 接頭辞で接続先を選び、それ以外は ChatGPT へ転送する
 - ChatGPT API ベース（`127.0.0.1:8000`）… Codex Desktop / Codex app-server のバックエンド呼び出しを中継し、利用枠（`/api/codex/usage` と `/wham/usage`）の応答だけを「制限なし」に書き換える。それ以外はそのまま `https://chatgpt.com` へ素通しする
 
 Codex 側は `model_provider = "local-router"` を向け、デスクトップアプリには環境変数 `CODEX_API_BASE_URL=http://localhost:8000/backend-api` を渡すだけで、通常の GPT モデルと OpenCode Go のモデルを同じモデル一覧から選べます。OpenCode Go のモデルは ChatGPT の利用枠を消費しないため、ChatGPT 側の枠が尽きていても送信できます。
@@ -14,6 +14,7 @@ flowchart LR
   Codex -->|"POST /responses"| Router
   Desktop[Codex Desktop / app-server] -->|"backend-api/*"| Api[API base proxy<br/>127.0.0.1:8000]
   Router -->|"go-* を転送"| Go[OpenCode Go<br/>opencode.ai/zen/go/v1]
+  Router -->|"inception-labs/* を変換・転送"| Inception[Mercury 3<br/>api.inceptionlabs.ai/v1/chat/completions]
   Router -->|"それ以外を転送"| ChatGPT[ChatGPT backend<br/>chatgpt.com]
   Api -->|"素通し + 利用枠だけ書き換え"| ChatGPT
 ```
@@ -113,10 +114,27 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
 | `OPENCODE_GO_API_KEY` | なし | 設定すると組み込みの OpenCode Go モデルを有効化。`~/.codex/.env`、無ければプロセス環境変数から読む |
+| `INCEPTION_API_KEY` | なし | 設定すると `inception-labs/mercury-3` を有効化。`.env` をプロセス環境変数より優先 |
 | `ROUTER_CONFIG` | `$CODEX_HOME/router.json` | 追加プロバイダの JSON 設定。省略時にファイルがなければ追加なし |
 | `ROUTER_LISTEN` | `127.0.0.1:18789` | モデル中継の待ち受けアドレス |
 | `ROUTER_API_LISTEN` | `127.0.0.1:8000,[::1]:8000` | ChatGPT API 中継の待ち受けアドレス（カンマ区切り） |
 | `CODEX_HOME` | `~/.codex` | `.env` と `router.json` を探すディレクトリ |
+
+## Mercury 3 を使う
+
+[Inception Labs のダッシュボード](https://platform.inceptionlabs.ai/dashboard/api-keys)で取得した API キーを、`~/.codex/.env` に次の形式で保存します（パーミッションは `0600`）。ルーターのプロセス環境変数でも指定できます。
+
+```sh
+export INCEPTION_API_KEY=...
+```
+
+ルーターを再起動すると `inception-labs/mercury-3` がモデル一覧に追加されます。`router.json` への登録は不要で、キーが未設定なら無効です。利用例:
+
+```sh
+codex exec --model inception-labs/mercury-3 'Reply with OK only.'
+```
+
+Mercury 3 は [公式仕様](https://docs.inceptionlabs.ai/get-started/models)でコンテキスト 1M・テキスト入力対応です。Inception の Chat Completions API と Codex の Responses API の間で、テキスト、関数ツール、`apply_patch` などのカスタムツール、JSON / SSE 応答、使用トークン数を変換します。画像入力や上流が実行する検索ツールには対応していません。reasoning effort は `minimal` を `instant`、`xhigh` / `max` を `high` に変換します。
 
 ## 好きなプロバイダを追加する
 
@@ -147,7 +165,7 @@ Responses API（`POST /responses`）互換の接続先を、`~/.codex/router.jso
 
 API キーの値は JSON に書かず、`api_key_env` で指定した名前を `~/.codex/.env` に `export MY_PROVIDER_API_KEY=...` の形で保存するか、ルーターのプロセス環境変数に設定します。`.env` を使う場合はパーミッションを `0600` にしてください。認証は `Authorization: Bearer <キー>` 形式で、認証不要のローカルサーバーでは `api_key_env` を省略できます。ChatGPT の認証情報や Cookie は追加先へ転送しません。
 
-`id` は英小文字から始まる英小文字・数字・アンダースコアで指定し、重複させないでください。`go` は OpenCode Go 用の予約名です。`name` を省略すると ID を表示名に使います。モデルの `context_window` と `max_context_window` を省略すると ChatGPT のカタログの値を継承するため、使うモデルの実際の値を指定してください。`clear_tool_mode: true` は継承元の ChatGPT 専用ツールモードを解除します。
+`id` は英小文字から始まる英小文字・数字・アンダースコアで指定し、重複させないでください。`go` と `inception-labs` は組み込みプロバイダ用の予約名です。`name` を省略すると ID を表示名に使います。モデルの `context_window` と `max_context_window` を省略すると ChatGPT のカタログの値を継承するため、使うモデルの実際の値を指定してください。`clear_tool_mode: true` は継承元の ChatGPT 専用ツールモードを解除します。
 
 設定後はルーターを再起動します（Linux の例: `systemctl --user restart codex-go-router.service`）。OpenCode Go は従来どおり `OPENCODE_GO_API_KEY` があれば有効になり、追加プロバイダだけを使う場合は不要です。モデル一覧の取得には引き続き ChatGPT ログインが必要です。
 
@@ -200,11 +218,13 @@ src/
   provider/
     provider.go        # 外部プロバイダ・モデルの共通型とコールバック定義
     opencode.go        # OpenCode Go 固有の処理
+    inception.go       # Mercury 3 のリクエスト変換・接続
+    inception_stream.go # Mercury 3 の応答・SSE 変換
 ```
 
 `src/provider/provider.go` に外部プロバイダの共通型 `Provider` とモデルの型 `Model` を定義しています。サービス固有の実装は `src/provider/<名前>.go` に `Provider` を返す関数として置き、`src/config.go` の `loadProviders` から読み込みます。OpenCode Go が実装例です。
 
-リクエストの調整は `PrepareRequest`、SSE イベントの変換は `RewriteEvent`、JSON 応答の変換は `RewriteResponse` に指定します。コールバックを省略すると、その変換は行いません。設定読み込み、共通の通信処理、reasoning の分離はルーター側が担当します。通常の Responses API 互換接続先は、従来どおり `router.json` への追記だけで追加できます。
+リクエストの調整は `PrepareRequest`、SSE イベントの変換は `RewriteEvent`、JSON 応答の変換は `RewriteResponse` に指定します。コールバックを省略すると、その変換は行いません。異なる通信方式を使う Inception Labs は `RoundTrip` で HTTP 境界の変換を行います。設定読み込み、共通の通信処理、reasoning の分離はルーター側が担当します。通常の Responses API 互換接続先は、従来どおり `router.json` への追記だけで追加できます。
 
 ```sh
 go build -o codex-go-router ./src

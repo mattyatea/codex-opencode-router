@@ -180,6 +180,7 @@ Codex デスクトップアプリや app-server が起動中なら再起動し�
 - `src/router.go` … モデルカタログの合成、接続先の選択、HTTP / SSE の中継
 - `src/provider/provider.go` … 外部プロバイダ・モデルの共通型とコールバック定義
 - `src/provider/opencode.go` … OpenCode Go のモデル定義、ツール・reasoning 変換、セッションヘッダー
+- `src/provider/inception.go` / `src/provider/inception_stream.go` … Mercury 3 の Chat Completions / Responses 変換。`INCEPTION_API_KEY` があるときだけ `inception-labs/mercury-3` を有効化する
 - `src/chatgpt.go` … 既定の ChatGPT 接続の認証ヘッダーとカタログ取得リクエスト
 - `src/responses.go` … Responses API 共通のリクエスト・レスポンス処理
 - `src/reasoning.go` … reasoning の接続先識別と他プロバイダ由来の状態の除去

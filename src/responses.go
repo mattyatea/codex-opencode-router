@@ -21,7 +21,7 @@ var hopByHopHeaders = map[string]bool{
 }
 
 func prepareProviderRequest(p *provider.Provider, payload map[string]any, incoming http.Header) (string, http.Header) {
-	payload["model"] = strings.TrimPrefix(payload["model"].(string), p.ID+"-")
+	payload["model"] = strings.TrimPrefix(payload["model"].(string), p.ModelPrefix())
 	headers := http.Header{}
 	if p.APIKey != "" {
 		headers.Set("Authorization", "Bearer "+p.APIKey)

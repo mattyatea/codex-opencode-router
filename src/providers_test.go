@@ -15,6 +15,7 @@ import (
 func TestLoadProvidersAndCatalog(t *testing.T) {
 	t.Setenv("ROUTER_CONFIG", "")
 	t.Setenv("OPENCODE_GO_API_KEY", "")
+	t.Setenv("INCEPTION_API_KEY", "")
 	t.Setenv("TEST_PROVIDER_KEY", "from-process")
 	path := filepath.Join(t.TempDir(), "router.json")
 	data := `{"providers":[{"id":"mine","base_url":"https://example.com/v1/","api_key_env":"TEST_PROVIDER_KEY","models":[{"id":"model-a","context_window":128000,"clear_tool_mode":true}]}]}`
