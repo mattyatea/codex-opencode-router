@@ -115,7 +115,8 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 | --- | --- | --- |
 | `OPENCODE_GO_API_KEY` | なし | 設定すると組み込みの OpenCode Go モデルを有効化。`~/.codex/.env`、無ければプロセス環境変数から読む |
 | `INCEPTION_API_KEY` | なし | 設定すると `inception-labs/mercury-3` を有効化。`.env` をプロセス環境変数より優先 |
-| `CLAUDE_AGENT_PYTHON` | なし | Agent SDK をインストールした Python の絶対パス。設定時だけ SDK から取得した Claude の正式モデル一覧を有効化 |
+| `CLAUDE_AGENT_NODE` | なし | Node.js の絶対パス。設定時だけ SDK から取得した Claude の正式モデル一覧を有効化 |
+| `CLAUDE_AGENT_SDK_DIR` | なし | `npm ci` で Agent SDK をインストールしたディレクトリ（`node_modules` の親）。`CLAUDE_AGENT_NODE` を設定したときは必須 |
 | `ROUTER_CONFIG` | `$CODEX_HOME/router.json` | 追加プロバイダの JSON 設定。省略時にファイルがなければ追加なし |
 | `ROUTER_LISTEN` | `127.0.0.1:18789` | モデル中継の待ち受けアドレス |
 | `ROUTER_API_LISTEN` | `127.0.0.1:8000,[::1]:8000` | ChatGPT API 中継の待ち受けアドレス（カンマ区切り） |
@@ -139,22 +140,22 @@ Mercury 3 は [公式仕様](https://docs.inceptionlabs.ai/get-started/models)�
 
 ## Claude のサブスクを Agent SDK 経由で使う
 
-Python 版 Claude Agent SDK を使う、個人のローカル利用向け接続です。Claude のツール呼び出しは Codex に返し、実行と承認は Codex が担当します。SDK 側の組み込みツールは無効にし、Codex から渡された関数ツールと `apply_patch` などのカスタムツールだけを MCP ツールとして提示します。実行前の SDK フックで呼び出しを保留するため、SDK が別途コマンドやファイル編集を実行することはありません。
+TypeScript 版 Claude Agent SDK を使う、個人のローカル利用向け接続です。Claude のツール呼び出しは Codex に返し、実行と承認は Codex が担当します。SDK 側の組み込みツールは無効にし、Codex から渡された関数ツールと `apply_patch` などのカスタムツールだけを MCP ツールとして提示します。実行前の SDK フックで呼び出しを保留するため、SDK が別途コマンドやファイル編集を実行することはありません。
 
-Python 3.10 以上と [uv](https://docs.astral.sh/uv/) を用意して、依存パッケージをインストールします。SDK の Python ブリッジは Go バイナリに埋め込まれますが、Python と SDK は実行時にも必要です。
+Node.js 18 以上を用意して、リポジトリの `package.json` に固定したバージョンの SDK をインストールします。SDK の Node ブリッジは Go バイナリに埋め込まれますが、Node と SDK は実行時にも必要です。Claude Code の CLI は SDK のプラットフォーム別パッケージに同梱されています。
 
 ```sh
 cd ~/.codex/codex-go-router
-uv venv .venv
-uv pip install --python .venv/bin/python -r deploy/claude-agent-requirements.txt
+npm ci
 ```
 
 認証情報は SDK / Claude Code 自身が読み込みます。ルーターにトークンをコピーする必要はありません。この接続ではプロセスに設定された Anthropic API キーや別 API 接続先の環境変数を引き継ぎません。認証方法・利用条件の詳細は [Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) と [Claude Code の認証に関する条件](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)を参照してください。
 
-`~/.codex/.env` に次の一行を追加します。`/home/your-user` は自分のホームディレクトリに置き換え、ファイルのパーミッションは `0600` にしてください。
+`~/.codex/.env` に次の二行を追加します。Node のパスは `command -v node` の結果（mise などのバージョン管理ツールを使っている場合はその実体のパス）に、`/home/your-user` は自分のホームディレクトリに置き換え、ファイルのパーミッションは `0600` にしてください。systemd のサービスはシェルの `PATH` を引き継がないので、Node は絶対パスで指定します。
 
 ```sh
-export CLAUDE_AGENT_PYTHON=/home/your-user/.codex/codex-go-router/.venv/bin/python
+export CLAUDE_AGENT_NODE=/usr/bin/node
+export CLAUDE_AGENT_SDK_DIR=/home/your-user/.codex/codex-go-router
 ```
 
 ビルド後、ルーターと同じ端末・OS ユーザーでサブスクのアカウントへログインします。SDK 同梱の Claude Code が認証を担当します。Mac のアプリから Linux のルーターへ接続する場合も、ログインコマンドは Linux 側で実行してください。
@@ -176,11 +177,11 @@ codex debug models
 codex exec --model claude/claude-sonnet-5-5 'Reply with OK only.'
 ```
 
-テキスト入力、ツール呼び出し、JSON / SSE 応答に対応します。Codex の `Thread-Id`（なければ `Session-Id`）と正式モデル ID ごとに SDK セッションを分離し、次のリクエストでは保存済みセッションを再開して追加分だけを送ります。ツール結果は SDK のネイティブな `tool_result` として渡します。Python / SDK プロセス自体はリクエストごとに起動しますが、会話履歴は SDK 側に残り、ルーターを再起動しても継続できます。
+テキスト入力、ツール呼び出し、JSON / SSE 応答に対応します。Codex の `Thread-Id`（なければ `Session-Id`）と正式モデル ID ごとに SDK セッションを分離し、次のリクエストでは保存済みセッションを再開して追加分だけを送ります。ツール結果は SDK のネイティブな `tool_result` として渡します。Node / SDK プロセス自体はリクエストごとに起動しますが、会話履歴は SDK 側に残り、ルーターを再起動しても継続できます。
 
-対応する SDK セッション ID と履歴照合用ハッシュは `$CODEX_HOME/claude-agent-sessions/`（既定は `~/.codex/claude-agent-sessions/`）に保存します。会話本文は Claude Code 標準のセッション保存先に残ります。同じ会話・モデルの更新はロックで直列化します。Codex での履歴の巻き戻し・圧縮、システム指示の変更、他モデルの応答の挿入、失敗・キャンセル後は保存済み履歴との対応を破棄し、Codex の履歴から新しいセッションを作ります。SDK の MCP 名ではなく Codex の元の名前でツール呼び出しが返った場合も、SDK が記録する未知ツールのエラーを再利用しないよう、次のターンは Codex の履歴から作り直します。その初回だけ、既存の assistant / tool 履歴は JSON の会話記録として渡し、画像は別の画像ブロックとして添付します。会話識別ヘッダーがないクライアントは永続化せず、毎回独立したセッションになります。
+対応する SDK セッション ID と履歴照合用ハッシュは `$CODEX_HOME/claude-agent-sessions/`（既定は `~/.codex/claude-agent-sessions/`）に保存します。会話本文は Claude Code 標準のセッション保存先に残ります。同じ会話・モデルの更新はルーター側のファイルロックで直列化します。Codex での履歴の巻き戻し・圧縮、システム指示の変更、他モデルの応答の挿入、失敗・キャンセル後は保存済み履歴との対応を破棄し、Codex の履歴から新しいセッションを作ります。SDK の MCP 名ではなく Codex の元の名前でツール呼び出しが返った場合も、SDK が記録する未知ツールのエラーを再利用しないよう、次のターンは Codex の履歴から作り直します。その初回だけ、既存の assistant / tool 履歴は JSON の会話記録として渡し、画像は別の画像ブロックとして添付します。会話識別ヘッダーがないクライアントは永続化せず、毎回独立したセッションになります。
 
-コンテキストの有効上限・最大上限・自動圧縮の閾値は、起動時に各モデルの SDK `get_context_usage()` から取得します。`CLAUDE_CODE_DISABLE_1M_CONTEXT` など SDK の環境設定も反映されます。Codex 自身の安全マージンと圧縮制御も適用されるため、Claude Code と圧縮のタイミングが一致するとは限りません。要求された最大出力は SDK に渡し、モデルの出力上限への制限は Claude Code に任せます。
+コンテキストの有効上限・最大上限・自動圧縮の閾値は、起動時に各モデルの SDK `getContextUsage()` から取得します。`CLAUDE_CODE_DISABLE_1M_CONTEXT` など SDK の環境設定も反映されます。Codex 自身の安全マージンと圧縮制御も適用されるため、Claude Code と圧縮のタイミングが一致するとは限りません。要求された最大出力は SDK に渡し、モデルの出力上限への制限は Claude Code に任せます。
 
 画像添付とツール結果内の画像は Claude の画像ブロックとして渡します（PNG/JPEG/GIF/WebP の base64 data URL または HTTPS URL）。モデル切り替え時の履歴も画像を保持します。ツール名は SDK の MCP 名と、一意に特定できる Codex の元の名前に対応します。
 
@@ -190,7 +191,7 @@ OpenAI サーバー側の検索・画像生成ツール、構造化出力、`pre
 
 ```sh
 go test ./...
-.venv/bin/python -m unittest discover -s src/provider -p '*_test.py'
+npm test
 ```
 
 ## 好きなプロバイダを追加する
@@ -279,7 +280,7 @@ src/
     inception.go       # Mercury 3 のリクエスト・応答変換
     response_stream.go # プロバイダ共通の Responses / SSE 出力
     claude.go          # Agent SDK の起動・応答変換
-    claude_agent.py    # SDK 認証・Codex ツールの提示と呼び出し返却
+    claude_agent.mjs   # SDK 認証・Codex ツールの提示と呼び出し返却
 ```
 
 `src/provider/provider.go` に外部プロバイダの共通型 `Provider` とモデルの型 `Model` を定義しています。サービス固有の実装は `src/provider/<名前>.go` に `Provider` を返す関数として置き、`src/config.go` の `loadProviders` から読み込みます。OpenCode Go が実装例です。

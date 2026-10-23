@@ -1,0 +1,12 @@
+{
+  "name": "codex-go-router-claude-agent",
+  "private": true,
+  "description": "Runtime dependencies of the embedded Claude Agent SDK bridge",
+  "scripts": {
+    "test": "node --test 'src/provider/*.test.mjs'"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.309",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

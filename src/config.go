@@ -67,6 +67,15 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// claudeBridge leaves Node empty when Claude is not configured.
+func claudeBridge(env map[string]string) (provider.ClaudeBridge, error) {
+	b := provider.ClaudeBridge{Node: lookupEnv(env, "CLAUDE_AGENT_NODE"), Dir: lookupEnv(env, "CLAUDE_AGENT_SDK_DIR")}
+	if b.Node != "" && b.Dir == "" {
+		return b, fmt.Errorf("set CLAUDE_AGENT_SDK_DIR to the directory where npm installed the Claude Agent SDK")
+	}
+	return b, nil
+}
+
 func providerConfigPath() string {
 	if path := os.Getenv("ROUTER_CONFIG"); path != "" {
 		return path
@@ -98,9 +107,13 @@ func loadProviders(path string, env map[string]string) ([]provider.Provider, err
 		p.APIKey = value
 		result = append(result, p)
 	}
-	if python := key("CLAUDE_AGENT_PYTHON"); python != "" {
-		p := provider.ClaudeAgent(python, filepath.Join(codexHome(), "claude-agent-sessions"))
-		p.Models, err = provider.DiscoverClaudeModels(python)
+	bridge, err := claudeBridge(env)
+	if err != nil {
+		return nil, err
+	}
+	if bridge.Node != "" {
+		p := provider.ClaudeAgent(bridge, filepath.Join(codexHome(), "claude-agent-sessions"))
+		p.Models, err = provider.DiscoverClaudeModels(bridge)
 		if err != nil {
 			return nil, err
 		}

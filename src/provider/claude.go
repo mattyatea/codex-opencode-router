@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,33 +15,49 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
-//go:embed claude_agent.py
+//go:embed claude_agent.mjs
 var claudeAgentBridge string
 
-func ClaudeAuth(python, action string) error {
-	cmd := exec.Command(python, "-u", "-c", claudeAgentBridge, "--auth", action)
+// ClaudeBridge runs the embedded Node bridge. Dir holds the node_modules with
+// the Agent SDK; the bridge resolves the SDK and its bundled CLI from there.
+type ClaudeBridge struct {
+	Node string
+	Dir  string
+}
+
+func (b ClaudeBridge) command(ctx context.Context, args ...string) *exec.Cmd {
+	script := claudeAgentBridge + "\nawait main(process.argv.slice(1));\n"
+	cmd := exec.CommandContext(ctx, b.Node, append([]string{"--input-type=module", "-e", script, "--"}, args...)...)
+	cmd.Dir = b.Dir
+	return cmd
+}
+
+func ClaudeAuth(b ClaudeBridge, action string) error {
+	cmd := b.command(context.Background(), "--auth", action)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
 
 // sessionRoot stores SDK session IDs per Codex thread so later turns can resume.
-func ClaudeAgent(python, sessionRoot string) Provider {
+func ClaudeAgent(b ClaudeBridge, sessionRoot string) Provider {
 	p := Provider{ID: "claude", Name: "Claude Agent SDK", Prefix: "claude/", BaseURL: "http://claude-agent.local"}
 	p.RoundTrip = func(_ *http.Client, request *http.Request) (*http.Response, error) {
-		return claudeRoundTrip(python, sessionRoot, request)
+		return claudeRoundTrip(b, sessionRoot, request)
 	}
 	return p
 }
 
 // Resolve aliases once at startup so the catalog and requests use exact IDs.
-func DiscoverClaudeModels(python string) ([]Model, error) {
+func DiscoverClaudeModels(b ClaudeBridge) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, python, "-u", "-c", claudeAgentBridge, "--models")
+	cmd := b.command(ctx, "--models")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("discover Claude models (check SDK installation): %w", err)
@@ -52,6 +70,30 @@ func DiscoverClaudeModels(python string) ([]Model, error) {
 		return nil, fmt.Errorf("Claude SDK returned no models")
 	}
 	return models, nil
+}
+
+// lockClaudeSession returns the session directory for one Codex thread and
+// model, locked until unlock so each bridge process resumes from the state the
+// previous turn saved. Without a thread ID the bridge uses a throwaway
+// directory and nothing is locked.
+func lockClaudeSession(root, thread, model string) (string, func(), error) {
+	if thread == "" {
+		return "", func() {}, nil
+	}
+	sum := sha256.Sum256([]byte(thread + "\x00" + model))
+	dir := filepath.Join(root, hex.EncodeToString(sum[:]))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", nil, err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return "", nil, err
+	}
+	return dir, func() { lock.Close() }, nil
 }
 
 // errClaudeIncomplete means the bridge exited before reporting completion.
@@ -67,20 +109,27 @@ func (b *claudeBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.Response, error) {
+func claudeRoundTrip(b ClaudeBridge, sessionRoot string, request *http.Request) (*http.Response, error) {
 	defer request.Body.Close()
 	var payload map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
+	model, _ := payload["model"].(string)
+	stream, _ := payload["stream"].(bool)
 	// Session identity comes from Codex headers, never a client-supplied path.
-	payload["_thread_id"] = request.Header.Get("Thread-Id")
-	if payload["_thread_id"] == "" {
-		payload["_thread_id"] = request.Header.Get("Session-Id")
+	thread := request.Header.Get("Thread-Id")
+	if thread == "" {
+		thread = request.Header.Get("Session-Id")
 	}
-	payload["_session_root"] = sessionRoot
+	sessionDir, unlock, err := lockClaudeSession(sessionRoot, thread, model)
+	if err != nil {
+		return nil, err
+	}
+	payload["_session_dir"] = sessionDir
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	// A disconnect interrupts the bridge only until it reports completion; after
@@ -93,7 +142,7 @@ func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.R
 			cancel()
 		}
 	}
-	cmd := exec.CommandContext(ctx, python, "-u", "-c", claudeAgentBridge)
+	cmd := b.command(ctx)
 	cmd.Stdin = bytes.NewReader(encoded)
 	// Give the SDK time to close its own subprocess on disconnect.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
@@ -101,14 +150,14 @@ func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.R
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		unlock()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		unlock()
 		return nil, fmt.Errorf("start Claude Agent SDK: %w", err)
 	}
-	model, _ := payload["model"].(string)
-	stream, _ := payload["stream"].(bool)
 	run := func(writer io.Writer) ([]byte, error) {
 		state := newResponseStream(writer, model, nil)
 		finish, usage, err := readClaudeEvents(stdout, state)
@@ -117,6 +166,7 @@ func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.R
 			stopOnDisconnect()
 			go func() {
 				defer cancel()
+				defer unlock()
 				if err := cmd.Wait(); err != nil {
 					log.Printf("Claude Agent SDK exited with an error after completing a response: %v", err)
 				}
@@ -124,7 +174,9 @@ func claudeRoundTrip(python, sessionRoot string, request *http.Request) (*http.R
 			err = state.finish(finish, usage, "")
 		} else {
 			cancel()
-			if waitErr := cmd.Wait(); waitErr != nil && errors.Is(err, errClaudeIncomplete) {
+			waitErr := cmd.Wait()
+			unlock()
+			if waitErr != nil && errors.Is(err, errClaudeIncomplete) {
 				err = fmt.Errorf("Claude Agent SDK process failed; check SDK installation and Claude login: %w", waitErr)
 			}
 		}

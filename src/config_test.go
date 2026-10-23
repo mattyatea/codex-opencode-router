@@ -117,20 +117,24 @@ func TestInceptionKeyAndCatalog(t *testing.T) {
 func TestClaudeSubscriptionCatalog(t *testing.T) {
 	t.Setenv("OPENCODE_GO_API_KEY", "")
 	t.Setenv("INCEPTION_API_KEY", "")
-	t.Setenv("CLAUDE_AGENT_PYTHON", "")
+	t.Setenv("CLAUDE_AGENT_NODE", "")
+	t.Setenv("CLAUDE_AGENT_SDK_DIR", "")
 	t.Setenv("ROUTER_CONFIG", "")
 	path := filepath.Join(t.TempDir(), "router.json")
 	loaded, err := loadProviders(path, nil)
 	if err != nil || len(loaded) != 0 {
 		t.Fatalf("unexpected enabled providers: %v", err)
 	}
-	python := filepath.Join(t.TempDir(), "python")
-	if err := os.WriteFile(python, []byte(`#!/bin/sh
+	node := filepath.Join(t.TempDir(), "node")
+	if err := os.WriteFile(node, []byte(`#!/bin/sh
 printf '%s' '[{"id":"claude-sonnet-5-5","name":"CC/Sonnet 5.5","context_window":500000,"max_context_window":1000000,"auto_compact_token_limit":467000,"clear_tool_mode":true,"reasoning_levels":["low","medium","high","xhigh","max"]}]'
 `), 0700); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err = loadProviders(path, map[string]string{"CLAUDE_AGENT_PYTHON": python})
+	if _, err := loadProviders(path, map[string]string{"CLAUDE_AGENT_NODE": node}); err == nil {
+		t.Fatal("Claude enabled without the SDK install directory")
+	}
+	loaded, err = loadProviders(path, map[string]string{"CLAUDE_AGENT_NODE": node, "CLAUDE_AGENT_SDK_DIR": t.TempDir()})
 	if err != nil || len(loaded) != 1 {
 		t.Fatalf("Claude not loaded: %v", err)
 	}
