@@ -1,1 +1,3 @@
 codex-go-router
+.venv/
+__pycache__/

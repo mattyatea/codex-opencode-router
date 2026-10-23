@@ -84,11 +84,19 @@ func loadProviders(path string, env map[string]string) ([]provider.Provider, err
 		p.APIKey = value
 		result = append(result, p)
 	}
-	seen := map[string]bool{"go": true, "inception-labs": true}
+	if python := key("CLAUDE_AGENT_PYTHON"); python != "" {
+		p := provider.ClaudeAgent(python)
+		p.Models, err = provider.DiscoverClaudeModels(python)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	seen := map[string]bool{"go": true, "inception-labs": true, "claude": true}
 	validID := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 	for _, p := range config.Providers {
 		if !validID.MatchString(p.ID) || seen[p.ID] {
-			return nil, fmt.Errorf("provider id %q must be unique, use lowercase letters/digits/underscores, and cannot be go or inception-labs", p.ID)
+			return nil, fmt.Errorf("provider id %q must be unique, use lowercase letters/digits/underscores, and cannot be go, inception-labs, or claude", p.ID)
 		}
 		seen[p.ID] = true
 		u, err := url.Parse(p.BaseURL)

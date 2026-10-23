@@ -1,9 +1,9 @@
 # codex-opencode-router
 
-Codex のモデル一覧に ChatGPT、OpenCode Go、Inception Labs の Mercury 3、自分で設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
+Codex のモデル一覧に ChatGPT、OpenCode Go、Inception Labs の Mercury 3、Claude Agent SDK、自分で設定した Responses API 互換プロバイダのモデルを同時に出すためのローカル中継サーバーです。あわせて、ChatGPT の利用枠が上限に達していても Codex Desktop の送信ボタンが無効化されないように、バックエンド API の中継（利用枠レスポンスの書き換え）も行います。
 
 - `GET /models` … ChatGPT のモデルカタログを取得し、登録済みプロバイダのモデルを追記して返す
-- `POST /responses` … モデル名の `go-`・`inception-labs/`・設定した `<プロバイダ ID>-` 接頭辞で接続先を選び、それ以外は ChatGPT へ転送する
+- `POST /responses` … モデル名の `go-`・`inception-labs/`・`claude/`・設定した `<プロバイダ ID>-` 接頭辞で接続先を選び、それ以外は ChatGPT へ転送する
 - ChatGPT API ベース（`127.0.0.1:8000`）… Codex Desktop / Codex app-server のバックエンド呼び出しを中継し、利用枠（`/api/codex/usage` と `/wham/usage`）の応答だけを「制限なし」に書き換える。それ以外はそのまま `https://chatgpt.com` へ素通しする
 
 Codex 側は `model_provider = "local-router"` を向け、デスクトップアプリには環境変数 `CODEX_API_BASE_URL=http://localhost:8000/backend-api` を渡すだけで、通常の GPT モデルと OpenCode Go のモデルを同じモデル一覧から選べます。OpenCode Go のモデルは ChatGPT の利用枠を消費しないため、ChatGPT 側の枠が尽きていても送信できます。
@@ -115,6 +115,7 @@ grep -E "wham/usage|api/codex/usage" ~/.codex/codex-go-router.log
 | --- | --- | --- |
 | `OPENCODE_GO_API_KEY` | なし | 設定すると組み込みの OpenCode Go モデルを有効化。`~/.codex/.env`、無ければプロセス環境変数から読む |
 | `INCEPTION_API_KEY` | なし | 設定すると `inception-labs/mercury-3` を有効化。`.env` をプロセス環境変数より優先 |
+| `CLAUDE_AGENT_PYTHON` | なし | Agent SDK をインストールした Python の絶対パス。設定時だけ SDK から取得した Claude の正式モデル一覧を有効化 |
 | `ROUTER_CONFIG` | `$CODEX_HOME/router.json` | 追加プロバイダの JSON 設定。省略時にファイルがなければ追加なし |
 | `ROUTER_LISTEN` | `127.0.0.1:18789` | モデル中継の待ち受けアドレス |
 | `ROUTER_API_LISTEN` | `127.0.0.1:8000,[::1]:8000` | ChatGPT API 中継の待ち受けアドレス（カンマ区切り） |
@@ -135,6 +136,58 @@ codex exec --model inception-labs/mercury-3 'Reply with OK only.'
 ```
 
 Mercury 3 は [公式仕様](https://docs.inceptionlabs.ai/get-started/models)でコンテキスト 1M・テキスト入力対応です。Inception の Chat Completions API と Codex の Responses API の間で、テキスト、関数ツール、`apply_patch` などのカスタムツール、JSON / SSE 応答、使用トークン数を変換します。画像入力や上流が実行する検索ツールには対応していません。reasoning effort は `minimal` を `instant`、`xhigh` / `max` を `high` に変換します。
+
+## Claude のサブスクを Agent SDK 経由で使う
+
+Python 版 Claude Agent SDK を使う、個人のローカル利用向け接続です。Claude のツール呼び出しは Codex に返し、実行と承認は Codex が担当します。SDK 側の組み込みツールは無効にし、Codex から渡された関数ツールと `apply_patch` などのカスタムツールだけを MCP ツールとして提示します。実行前の SDK フックで呼び出しを保留するため、SDK が別途コマンドやファイル編集を実行することはありません。
+
+Python 3.10 以上と [uv](https://docs.astral.sh/uv/) を用意して、依存パッケージをインストールします。SDK の Python ブリッジは Go バイナリに埋め込まれますが、Python と SDK は実行時にも必要です。
+
+```sh
+cd ~/.codex/codex-go-router
+uv venv .venv
+uv pip install --python .venv/bin/python -r deploy/claude-agent-requirements.txt
+```
+
+認証情報は SDK / Claude Code 自身が読み込みます。ルーターにトークンをコピーする必要はありません。この接続ではプロセスに設定された Anthropic API キーや別 API 接続先の環境変数を引き継ぎません。認証方法・利用条件の詳細は [Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) と [Claude Code の認証に関する条件](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)を参照してください。
+
+`~/.codex/.env` に次の一行を追加します。`/home/your-user` は自分のホームディレクトリに置き換え、ファイルのパーミッションは `0600` にしてください。
+
+```sh
+export CLAUDE_AGENT_PYTHON=/home/your-user/.codex/codex-go-router/.venv/bin/python
+```
+
+ビルド後、ルーターと同じ端末・OS ユーザーでサブスクのアカウントへログインします。SDK 同梱の Claude Code が認証を担当します。Mac のアプリから Linux のルーターへ接続する場合も、ログインコマンドは Linux 側で実行してください。
+
+```sh
+go build -o ~/.codex/bin/codex-go-router ./src
+~/.codex/bin/codex-go-router claude login
+~/.codex/bin/codex-go-router claude status
+```
+
+ログイン後はそのまま再試行できます。認証情報を読むためだけにルーターを再起動する必要はありません。
+
+ビルドしてルーターを再起動すると、SDK が返す正式モデル ID と対応する名前が一覧に追加されます。たとえば `claude/claude-sonnet-5-5` は「Claude Sonnet 5.5」と表示され、送信先にもその正式 ID を使います。利用可能なモデルと reasoning effort は起動時の SDK 情報に従い、固定の別名一覧にはしません。モデル一覧を更新するにはルーターを再起動してください。
+
+```sh
+go build -o ~/.codex/bin/codex-go-router ./src
+systemctl --user restart codex-go-router.service  # Linux の場合
+codex debug models
+codex exec --model claude/claude-sonnet-5-5 'Reply with OK only.'
+```
+
+テキスト入力、ツール呼び出し、JSON / SSE 応答に対応します。Codex の `Thread-Id`（なければ `Session-Id`）と正式モデル ID ごとに SDK セッションを分離し、次のリクエストでは保存済みセッションを再開して追加分だけを送ります。ツール結果は SDK のネイティブな `tool_result` として渡します。Python / SDK プロセス自体はリクエストごとに起動しますが、会話履歴は SDK 側に残り、ルーターを再起動しても継続できます。
+
+対応する SDK セッション ID と履歴照合用ハッシュは `$CODEX_HOME/claude-agent-sessions/`（既定は `~/.codex/claude-agent-sessions/`）に保存します。会話本文は Claude Code 標準のセッション保存先に残ります。同じ会話・モデルの更新はロックで直列化します。Codex での履歴の巻き戻し・圧縮、システム指示の変更、他モデルの応答の挿入、失敗・キャンセル後は保存済み履歴との対応を破棄し、Codex の履歴から新しいセッションを作ります。その初回だけ、既存の assistant / tool 履歴は JSON の会話記録として渡します。会話識別ヘッダーがないクライアントは永続化せず、毎回独立したセッションになります。
+
+コンテキストは保守的に 200k としています。画像、OpenAI サーバー側の検索・画像生成ツール、構造化出力、`previous_response_id` による継続には対応していません。
+
+変換とツール実行境界のテストは次で実行できます。サブスクへの実接続は上の `codex exec` で別途確認してください。
+
+```sh
+go test ./...
+.venv/bin/python -m unittest discover -s src/provider -p '*_test.py'
+```
 
 ## 好きなプロバイダを追加する
 
@@ -165,7 +218,7 @@ Responses API（`POST /responses`）互換の接続先を、`~/.codex/router.jso
 
 API キーの値は JSON に書かず、`api_key_env` で指定した名前を `~/.codex/.env` に `export MY_PROVIDER_API_KEY=...` の形で保存するか、ルーターのプロセス環境変数に設定します。`.env` を使う場合はパーミッションを `0600` にしてください。認証は `Authorization: Bearer <キー>` 形式で、認証不要のローカルサーバーでは `api_key_env` を省略できます。ChatGPT の認証情報や Cookie は追加先へ転送しません。
 
-`id` は英小文字から始まる英小文字・数字・アンダースコアで指定し、重複させないでください。`go` と `inception-labs` は組み込みプロバイダ用の予約名です。`name` を省略すると ID を表示名に使います。モデルの `context_window` と `max_context_window` を省略すると ChatGPT のカタログの値を継承するため、使うモデルの実際の値を指定してください。`clear_tool_mode: true` は継承元の ChatGPT 専用ツールモードを解除します。
+`id` は英小文字から始まる英小文字・数字・アンダースコアで指定し、重複させないでください。`go`・`inception-labs`・`claude` は組み込みプロバイダ用の予約名です。`name` を省略すると ID を表示名に使います。モデルの `context_window` と `max_context_window` を省略すると ChatGPT のカタログの値を継承するため、使うモデルの実際の値を指定してください。`clear_tool_mode: true` は継承元の ChatGPT 専用ツールモードを解除します。
 
 設定後はルーターを再起動します（Linux の例: `systemctl --user restart codex-go-router.service`）。OpenCode Go は従来どおり `OPENCODE_GO_API_KEY` があれば有効になり、追加プロバイダだけを使う場合は不要です。モデル一覧の取得には引き続き ChatGPT ログインが必要です。
 
@@ -219,7 +272,10 @@ src/
     provider.go        # 外部プロバイダ・モデルの共通型とコールバック定義
     opencode.go        # OpenCode Go 固有の処理
     inception.go       # Mercury 3 のリクエスト変換・接続
-    inception_stream.go # Mercury 3 の応答・SSE 変換
+    inception_stream.go # Mercury 3 の応答の読み込み
+    response_stream.go # プロバイダ共通の Responses / SSE 出力
+    claude.go          # Agent SDK の起動・応答変換
+    claude_agent.py    # SDK 認証・Codex ツールの提示と呼び出し返却
 ```
 
 `src/provider/provider.go` に外部プロバイダの共通型 `Provider` とモデルの型 `Model` を定義しています。サービス固有の実装は `src/provider/<名前>.go` に `Provider` を返す関数として置き、`src/config.go` の `loadProviders` から読み込みます。OpenCode Go が実装例です。

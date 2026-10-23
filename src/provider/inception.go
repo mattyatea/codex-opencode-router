@@ -68,7 +68,7 @@ func inceptionRoundTrip(client *http.Client, request *http.Request) (*http.Respo
 		if err := json.NewDecoder(response.Body).Decode(&completion); err != nil {
 			return nil, fmt.Errorf("inception response: %w", err)
 		}
-		state := newInceptionResponse(nil, model, customTools)
+		state := newResponseStream(nil, model, customTools)
 		if len(completion.Choices) == 0 {
 			return nil, fmt.Errorf("inception response has no choices")
 		}
