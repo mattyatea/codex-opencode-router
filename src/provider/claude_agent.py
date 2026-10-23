@@ -43,7 +43,7 @@ def conversation(payload):
         inputs = [{"role": "user", "content": inputs}]
     for item in inputs:
         kind = item.get("type", "message")
-        if kind == "reasoning":
+        if kind in ("reasoning", "additional_tools"):
             continue
         if kind == "message":
             content = text_content(item["content"])
@@ -179,7 +179,7 @@ async def defer_tool(_input, _tool_use_id, _context):
 
 
 def codex_tools(definitions):
-    tools, names = [], {}
+    tools, names = {}, {}
 
     def add(definition, namespace=None):
         kind = definition["type"]
@@ -203,11 +203,11 @@ def codex_tools(definitions):
         description = f"{original}{definition['name']}: {definition.get('description', '')}"
         if kind == "custom" and definition.get("format"):
             description += "\nInput format: " + json.dumps(definition["format"])
-        tools.append(SdkMcpTool(alias, description, schema, never_execute))
+        tools[alias] = SdkMcpTool(alias, description, schema, never_execute)
 
     for definition in definitions:
         add(definition)
-    return tools, names
+    return list(tools.values()), names
 
 
 async def run(payload, query_fn=query):
@@ -218,7 +218,13 @@ async def run(payload, query_fn=query):
     if payload.get("text", {}).get("format", {}).get("type", "text") != "text":
         raise ValueError("Claude bridge does not yet support structured output formats")
     system, history = conversation(payload)
-    tools, names = codex_tools(payload.get("tools", []) if payload.get("tool_choice") != "none" else [])
+    definitions = list(payload.get("tools", []))
+    inputs = payload.get("input", [])
+    if isinstance(inputs, list):
+        for item in inputs:
+            if item.get("type") == "additional_tools":
+                definitions.extend(item["tools"])
+    tools, names = codex_tools(definitions if payload.get("tool_choice") != "none" else [])
     effort = payload.get("reasoning", {}).get("effort", "low")
     effort = {"none": "low", "minimal": "low"}.get(effort, effort)
     env = {"ENABLE_TOOL_SEARCH": "false"}

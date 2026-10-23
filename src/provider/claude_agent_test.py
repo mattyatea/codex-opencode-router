@@ -92,7 +92,9 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["delta"]["tool_calls"][0]["function"]["name"], "exec_command")
         self.assertTrue(events[1]["custom"])
         self.assertEqual(events[-1]["usage"]["prompt_tokens"], 12)
+        request["tools"] = []
         request["input"] = [
+            {"type": "additional_tools", "role": "developer", "tools": [tool]},
             {"role": "user", "content": "Run pwd"},
             {"type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": '{"cmd":"pwd"}'},
             {"type": "custom_tool_call", "call_id": "call_2", "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch"},
@@ -102,20 +104,45 @@ class ClaudeBridgeTest(unittest.IsolatedAsyncioTestCase):
 
         async def second_query(*, prompt, options):
             self.assertEqual(options.resume, "test")
+            self.assertIn("codex", options.mcp_servers)
             blocks = (await anext(prompt))["message"]["content"]
             self.assertEqual(blocks, [
                 {"type": "tool_result", "tool_use_id": "call_1", "content": "/workspace"},
                 {"type": "tool_result", "tool_use_id": "call_2", "content": "Done"},
             ])
             yield StreamEvent(uuid="event", session_id="test", event={"type": "content_block_delta", "delta": {"type": "text_delta", "text": "/workspace"}})
-            yield AssistantMessage(model="sonnet", content=[TextBlock(text="/workspace")])
+            yield AssistantMessage(model="sonnet", content=[
+                TextBlock(text="/workspace"),
+                ToolUseBlock(id="call_3", name="mcp__codex__" + bridge.tool_alias("exec_command"), input={"cmd": "ls"}),
+            ])
             yield result()
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             await bridge.run(request, query_fn=second_query)
         events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual([e["delta"]["content"] for e in events if e["type"] == "delta"], ["/workspace"])
+        self.assertEqual([e["delta"]["content"] for e in events if "content" in e.get("delta", {})], ["/workspace"])
+        self.assertEqual(events[1]["delta"]["tool_calls"][0]["function"]["name"], "exec_command")
+
+    async def test_additional_tool_redefinition_and_tool_choice_none(self):
+        old = {"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}
+        new = {**old, "description": "updated lookup"}
+        namespace = lambda tool: {"type": "namespace", "name": "functions", "tools": [tool]}
+        tools, names = bridge.codex_tools([namespace(old), namespace(new)])
+        self.assertEqual(len(tools), 1)
+        self.assertIn("updated lookup", tools[0].description)
+        self.assertEqual(next(iter(names.values()))["namespace"], "functions")
+
+        async def inspect(*, prompt, options):
+            self.assertEqual(options.mcp_servers, {})
+            self.assertEqual((await anext(prompt))["message"]["content"], [{"type": "text", "text": "hello"}])
+            yield result()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            await bridge.run({"model": "sonnet", "tool_choice": "none", "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [namespace(new)]},
+                {"role": "user", "content": "hello"},
+            ]}, query_fn=inspect)
 
     async def test_session_isolation_rewind_and_failed_turn(self):
         request = {"model": "claude-sonnet-5-5", "input": "hello", "_thread_id": "one", "_session_root": self.session_root}
