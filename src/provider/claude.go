@@ -4,39 +4,61 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
-//go:embed claude_agent.py
+//go:embed claude_agent.ts
 var claudeAgentBridge string
 
-func ClaudeAuth(python, action string) error {
-	cmd := exec.Command(python, "-u", "-c", claudeAgentBridge, "--auth", action)
+// ClaudeBridge runs the embedded TypeScript bridge with Node, which strips the
+// types at load time (Node 22.18+). Dir holds the node_modules with
+// the Agent SDK; the bridge resolves the SDK and its bundled CLI from there.
+type ClaudeBridge struct {
+	Node string
+	Dir  string
+}
+
+func (b ClaudeBridge) command(ctx context.Context, args ...string) *exec.Cmd {
+	script := claudeAgentBridge + "\nawait main(process.argv.slice(1));\n"
+	cmd := exec.CommandContext(ctx, b.Node, append([]string{"--input-type=module-typescript", "-e", script, "--"}, args...)...)
+	cmd.Dir = b.Dir
+	return cmd
+}
+
+func ClaudeAuth(b ClaudeBridge, action string) error {
+	cmd := b.command(context.Background(), "--auth", action)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
 
-func ClaudeAgent(python string) Provider {
+// sessionRoot stores SDK session IDs per Codex thread so later turns can resume.
+func ClaudeAgent(b ClaudeBridge, sessionRoot string) Provider {
 	p := Provider{ID: "claude", Name: "Claude Agent SDK", Prefix: "claude/", BaseURL: "http://claude-agent.local"}
 	p.RoundTrip = func(_ *http.Client, request *http.Request) (*http.Response, error) {
-		return claudeRoundTrip(python, request)
+		return claudeRoundTrip(b, sessionRoot, request)
 	}
 	return p
 }
 
 // Resolve aliases once at startup so the catalog and requests use exact IDs.
-func DiscoverClaudeModels(python string) ([]Model, error) {
+func DiscoverClaudeModels(b ClaudeBridge) ([]Model, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, python, "-u", "-c", claudeAgentBridge, "--models")
+	cmd := b.command(ctx, "--models")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("discover Claude models (check SDK installation): %w", err)
@@ -51,42 +73,77 @@ func DiscoverClaudeModels(python string) ([]Model, error) {
 	return models, nil
 }
 
+// lockClaudeSession returns the session directory for one Codex thread and
+// model, locked until unlock so each bridge process resumes from the state the
+// previous turn saved. Without a thread ID the bridge uses a throwaway
+// directory and nothing is locked.
+func lockClaudeSession(root, thread, model string) (string, func(), error) {
+	if thread == "" {
+		return "", func() {}, nil
+	}
+	sum := sha256.Sum256([]byte(thread + "\x00" + model))
+	dir := filepath.Join(root, hex.EncodeToString(sum[:]))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", nil, err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return "", nil, err
+	}
+	return dir, func() { lock.Close() }, nil
+}
+
+// errClaudeIncomplete means the bridge exited before reporting completion.
+var errClaudeIncomplete = errors.New("Claude Agent SDK ended without completing the response")
+
 type claudeBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	abort func()
 }
 
 func (b *claudeBody) Close() error {
-	b.cancel()
+	b.abort()
 	return b.ReadCloser.Close()
 }
 
-func claudeRoundTrip(python string, request *http.Request) (*http.Response, error) {
+func claudeRoundTrip(b ClaudeBridge, sessionRoot string, request *http.Request) (*http.Response, error) {
 	defer request.Body.Close()
 	var payload map[string]any
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
+	model, _ := payload["model"].(string)
+	stream, _ := payload["stream"].(bool)
 	// Session identity comes from Codex headers, never a client-supplied path.
-	payload["_thread_id"] = request.Header.Get("Thread-Id")
-	if payload["_thread_id"] == "" {
-		payload["_thread_id"] = request.Header.Get("Session-Id")
+	thread := request.Header.Get("Thread-Id")
+	if thread == "" {
+		thread = request.Header.Get("Session-Id")
 	}
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		codexHome = filepath.Join(home, ".codex")
-	}
-	payload["_session_root"] = filepath.Join(codexHome, "claude-agent-sessions")
-	encoded, err := json.Marshal(payload)
+	sessionDir, unlock, err := lockClaudeSession(sessionRoot, thread, model)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(request.Context())
-	cmd := exec.CommandContext(ctx, python, "-u", "-c", claudeAgentBridge)
+	payload["_session_dir"] = sessionDir
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	// A disconnect interrupts the bridge only until it reports completion; after
+	// that it keeps running so it can save the session state while the SDK exits.
+	ctx, cancel := context.WithCancel(context.Background())
+	stopOnDisconnect := context.AfterFunc(request.Context(), cancel)
+	var detached atomic.Bool
+	abort := func() {
+		if !detached.Load() {
+			cancel()
+		}
+	}
+	cmd := b.command(ctx)
 	cmd.Stdin = bytes.NewReader(encoded)
 	// Give the SDK time to close its own subprocess on disconnect.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
@@ -94,24 +151,35 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
+		unlock()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		unlock()
 		return nil, fmt.Errorf("start Claude Agent SDK: %w", err)
 	}
-	model, _ := payload["model"].(string)
-	stream, _ := payload["stream"].(bool)
 	run := func(writer io.Writer) ([]byte, error) {
-		defer cancel()
 		state := newResponseStream(writer, model, nil)
-		err := readClaudeEvents(stdout, state)
-		if err != nil {
+		finish, usage, err := readClaudeEvents(stdout, state)
+		if err == nil {
+			detached.Store(true)
+			stopOnDisconnect()
+			go func() {
+				defer cancel()
+				defer unlock()
+				if err := cmd.Wait(); err != nil {
+					log.Printf("Claude Agent SDK exited with an error after completing a response: %v", err)
+				}
+			}()
+			err = state.finish(finish, usage, "")
+		} else {
 			cancel()
-		}
-		waitErr := cmd.Wait()
-		if err == nil && waitErr != nil {
-			err = fmt.Errorf("Claude Agent SDK process failed; check SDK installation and Claude login: %w", waitErr)
+			waitErr := cmd.Wait()
+			unlock()
+			if waitErr != nil && errors.Is(err, errClaudeIncomplete) {
+				err = fmt.Errorf("Claude Agent SDK process failed; check SDK installation and Claude login: %w", waitErr)
+			}
 		}
 		if err != nil {
 			state.response["status"] = "failed"
@@ -125,7 +193,7 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 	if stream {
 		reader, writer := io.Pipe()
 		response.Header.Set("Content-Type", "text/event-stream")
-		response.Body = &claudeBody{ReadCloser: reader, cancel: cancel}
+		response.Body = &claudeBody{ReadCloser: reader, abort: abort}
 		go func() { _, err := run(writer); writer.CloseWithError(err) }()
 	} else {
 		body, err := run(nil)
@@ -138,11 +206,10 @@ func claudeRoundTrip(python string, request *http.Request) (*http.Response, erro
 	return response, nil
 }
 
-func readClaudeEvents(reader io.Reader, state *responseStream) error {
+// readClaudeEvents streams bridge deltas into state and returns at the "complete" event.
+func readClaudeEvents(reader io.Reader, state *responseStream) (string, responseUsage, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64<<10), 16<<20)
-	var finish string
-	var usage responseUsage
+	scanner.Buffer(make([]byte, 64<<10), maxEventLineBytes)
 	for scanner.Scan() {
 		var event struct {
 			Type    string        `json:"type"`
@@ -153,7 +220,7 @@ func readClaudeEvents(reader io.Reader, state *responseStream) error {
 			Message string        `json:"message"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return fmt.Errorf("invalid Claude Agent SDK event: %w", err)
+			return "", responseUsage{}, fmt.Errorf("invalid Claude Agent SDK event: %w", err)
 		}
 		switch event.Type {
 		case "delta":
@@ -167,18 +234,18 @@ func readClaudeEvents(reader io.Reader, state *responseStream) error {
 			}
 			state.appendDelta(event.Delta)
 		case "complete":
-			finish, usage = event.Finish, event.Usage
+			return event.Finish, event.Usage, state.err
 		case "error":
-			return fmt.Errorf("Claude Agent SDK: %s", event.Message)
+			return "", responseUsage{}, fmt.Errorf("Claude Agent SDK: %s", event.Message)
 		default:
-			return fmt.Errorf("unknown Claude Agent SDK event %q", event.Type)
+			return "", responseUsage{}, fmt.Errorf("unknown Claude Agent SDK event %q", event.Type)
 		}
 		if state.err != nil {
-			return state.err
+			return "", responseUsage{}, state.err
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return "", responseUsage{}, err
 	}
-	return state.finish(finish, usage, "")
+	return "", responseUsage{}, errClaudeIncomplete
 }

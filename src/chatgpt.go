@@ -8,15 +8,16 @@ import (
 const chatgptOrigin = "https://chatgpt.com"
 const minCatalogClientVersion = "0.160.0"
 
-func chatgptHeaders(incoming http.Header) (http.Header, error) {
+// prepareChatGPTRequest forwards the caller's ChatGPT credentials, which providers never receive.
+func prepareChatGPTRequest(incoming http.Header) (string, http.Header, error) {
 	authorization := incoming.Get("Authorization")
 	if authorization == "" {
-		return nil, fmt.Errorf("missing authorization")
+		return "", nil, fmt.Errorf("missing authorization")
 	}
 	headers := http.Header{}
 	headers.Set("Authorization", authorization)
 	copyHeaders(headers, incoming)
-	return headers, nil
+	return chatgptOrigin + "/backend-api/codex/responses", headers, nil
 }
 
 func chatgptCatalogRequest(r *http.Request) (*http.Request, error) {

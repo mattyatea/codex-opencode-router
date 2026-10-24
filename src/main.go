@@ -7,39 +7,40 @@ import (
 	"os"
 )
 
-const listenDefault = "127.0.0.1:18789"
+const (
+	listenDefault    = "127.0.0.1:18789"
+	apiListenDefault = "127.0.0.1:8000,[::1]:8000"
+)
 
 func main() {
 	env := loadEnv(defaultEnvPath())
 	if len(os.Args) > 1 {
-		if len(os.Args) != 3 || os.Args[1] != "claude" || (os.Args[2] != "login" && os.Args[2] != "status") {
-			log.Fatal("usage: codex-go-router [claude login|status]")
-		}
-		python := env["CLAUDE_AGENT_PYTHON"]
-		if python == "" {
-			python = os.Getenv("CLAUDE_AGENT_PYTHON")
-		}
-		if python == "" {
-			log.Fatal("set CLAUDE_AGENT_PYTHON to the Python executable with claude-agent-sdk installed")
-		}
-		if err := provider.ClaudeAuth(python, os.Args[2]); err != nil {
-			log.Fatal(err)
-		}
+		runClaudeAuth(env)
 		return
 	}
-	var err error
-	providers, err = loadProviders(providerConfigPath(), env)
+	providers, err := loadProviders(providerConfigPath(), env)
 	if err != nil {
 		log.Fatal(err)
 	}
-	listenAddr := os.Getenv("ROUTER_LISTEN")
-	if listenAddr == "" {
-		listenAddr = listenDefault
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/models", handleModels)
-	mux.HandleFunc("/responses", handleResponses)
-	serveAPI()
+	serveAPI(envOr("ROUTER_API_LISTEN", apiListenDefault))
+	listenAddr := envOr("ROUTER_LISTEN", listenDefault)
 	log.Printf("codex-go-router listening on %s", listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, mux))
+	log.Fatal(http.ListenAndServe(listenAddr, newRouter(providers).handler()))
+}
+
+// runClaudeAuth handles `codex-go-router claude login|status`.
+func runClaudeAuth(env map[string]string) {
+	if len(os.Args) != 3 || os.Args[1] != "claude" || (os.Args[2] != "login" && os.Args[2] != "status") {
+		log.Fatal("usage: codex-go-router [claude login|status]")
+	}
+	bridge, err := claudeBridge(env)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if bridge.Node == "" {
+		log.Fatal("set CLAUDE_AGENT_NODE to the Node.js executable and CLAUDE_AGENT_SDK_DIR to the Claude Agent SDK install directory")
+	}
+	if err := provider.ClaudeAuth(bridge, os.Args[2]); err != nil {
+		log.Fatal(err)
+	}
 }

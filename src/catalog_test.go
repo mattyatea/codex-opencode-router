@@ -20,7 +20,7 @@ func TestBuildUnionCatalogAppendsGoModels(t *testing.T) {
 			},
 		},
 	}
-	merged, err := buildUnionCatalog(catalog)
+	merged, err := buildUnionCatalog(catalog, []provider.Provider{provider.OpenCode()})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// maxEventLineBytes bounds one upstream event line read by the adapters.
+const maxEventLineBytes = 16 << 20
+
 type responseToolCall struct {
 	Index     int    `json:"index"`
 	ID        string `json:"id"`
