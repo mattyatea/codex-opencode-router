@@ -20,6 +20,7 @@ type ContentPart = { type: string; text?: string; image_url?: string };
 type Content = string | ContentPart[];
 export type InputItem = {
   type?: string; role?: string; content?: Content; output?: Content;
+  author?: string; recipient?: string;
   call_id?: string; name?: string; namespace?: string; arguments?: string; input?: string;
   tools?: ToolDefinition[];
 };
@@ -55,6 +56,8 @@ export function textContent(value: Content | undefined): string {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value)) throw new Error('Claude bridge requires text content');
   return value.map((part) => {
+    // Claude cannot decrypt OpenAI reasoning or inter-agent payloads.
+    if (part.type === 'encrypted_content') return '';
     if (!['text', 'input_text', 'output_text'].includes(part.type)) {
       throw new Error('Claude bridge currently supports text input only');
     }
@@ -88,6 +91,12 @@ export function conversation(payload: Partial<Payload>): [string, HistoryItem[]]
       const content = multimodalContent(item.content);
       if (item.role === 'system' || item.role === 'developer') system.push(textContent(item.content));
       else history.push({ role: item.role, content });
+    } else if (kind === 'agent_message') {
+      let content = textContent(item.content);
+      const author = item.author ?? '';
+      const recipient = item.recipient ?? '';
+      if (author || recipient) content = `Agent message from ${author} to ${recipient}:\n${content}`;
+      history.push({ role: 'user', content });
     } else if (kind === 'function_call' || kind === 'custom_tool_call') {
       const call: HistoryItem = {};
       for (const key of ['type', 'name', 'namespace', 'call_id', 'arguments', 'input'] as const) {
@@ -314,9 +323,13 @@ export function resolveTool(name: string, names: ToolNames): ToolDefinition {
 }
 
 export function completion(result: SDKResultMessage, calls: number, stopReason: string | null) {
-  if (result.is_error && !(calls && result.subtype === 'error_max_turns')) {
+  const deferred = calls > 0 && result.subtype === 'success'
+    && (['tool_deferred', 'tool_deferred_unavailable'].includes(result.terminal_reason ?? '') || result.stop_reason === 'tool_deferred')
+    && !result.api_error_status;
+  if (result.is_error && !deferred && !(calls && result.subtype === 'error_max_turns')) {
     const detail = result.subtype === 'success' ? result.result : result.errors.join('; ');
-    throw new Error('Claude SDK request failed: ' + (detail || result.subtype));
+    const reason = result.terminal_reason || result.stop_reason || result.subtype;
+    throw new Error('Claude SDK request failed: ' + (detail || reason));
   }
   const usage = result.usage;
   const cached = usage.cache_read_input_tokens ?? 0;
@@ -371,6 +384,7 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
     let result: SDKResultMessage | null = null;
     let stopReason: string | null = null;
     let resumable = true;
+    let rebuildSession = false;
     try {
       for await (const message of queryFn({ prompt, options })) {
         if (message.type === 'stream_event' && message.parent_tool_use_id === null) {
@@ -422,9 +436,18 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
         }
       }
     } catch (error) {
-      if (!(calls && result?.subtype === 'error_max_turns')) throw error;
+      rebuildSession = Boolean(session.resume && calls === 0 && outputText.length === 0
+        && result?.subtype === 'success' && result.terminal_reason === 'tool_deferred_unavailable'
+        && !result.api_error_status);
+      if (!rebuildSession && !(calls && result?.subtype === 'error_max_turns')) throw error;
     } finally {
       process.off('SIGINT', abort);
+    }
+    // Some CLI versions cannot resume deferred MCP calls. Rebuild once from
+    // Codex history; openSession already removed the stale resume cursor.
+    if (rebuildSession) {
+      await run(payload, queryFn);
+      return;
     }
     if (result === null) throw new Error('Claude SDK ended without a result');
     if (session.statePath && resumable) {
@@ -451,6 +474,12 @@ function bundledCli(): string {
   throw new Error(`Claude Code binary not found in ${base}; reinstall the SDK`);
 }
 
+export async function readPayload(input: AsyncIterable<Buffer | string>): Promise<Payload> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of input) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
 export async function main(args: string[]): Promise<void> {
   try {
     if (args.length === 2 && args[0] === '--auth' && ['login', 'status'].includes(args[1])) {
@@ -459,7 +488,7 @@ export async function main(args: string[]): Promise<void> {
     } else if (args.includes('--models')) {
       await discoverModels();
     } else {
-      await run(JSON.parse(fs.readFileSync(0, 'utf8')));
+      await run(await readPayload(process.stdin));
     }
   } catch (error) {
     emit({ type: 'error', message: error instanceof Error ? error.message : String(error) });

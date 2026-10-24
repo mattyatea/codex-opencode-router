@@ -7,6 +7,27 @@ import * as bridge from './claude_agent.ts';
 import type { ControlQuery, InputItem, Payload, RunQuery } from './claude_agent.ts';
 
 type QueryParams = Parameters<RunQuery>[0];
+
+test('request input waits for asynchronous chunks and preserves UTF-8', async () => {
+  const bytes = Buffer.from(JSON.stringify({ model: 'sonnet', input: 'こんにちは' }));
+  async function* chunks() {
+    for (const byte of bytes) {
+      await new Promise((resolve) => setImmediate(resolve));
+      yield Buffer.from([byte]);
+    }
+  }
+  assert.deepEqual(await bridge.readPayload(chunks()), { model: 'sonnet', input: 'こんにちは' });
+});
+
+test('agent messages preserve readable content and routing context', () => {
+  const [, history] = bridge.conversation({ input: [{
+    type: 'agent_message', author: '/root', recipient: '/root/worker',
+    content: [{ type: 'input_text', text: 'Run the task' }, { type: 'encrypted_content' }],
+  }] });
+  assert.deepEqual(history, [{
+    role: 'user', content: 'Agent message from /root to /root/worker:\nRun the task',
+  }]);
+});
 // Mocks yield only the message fields the bridge reads.
 const mock = (fn: (params: QueryParams) => AsyncGenerator<object>) => fn as unknown as RunQuery;
 const firstPrompt = async ({ prompt }: QueryParams) => (await prompt[Symbol.asyncIterator]().next()).value.message.content;
@@ -228,6 +249,55 @@ test('errors do not become successful responses', async () => {
   await assert.rejects(captured(() => bridge.run({ model: 'sonnet', input: 'hello' }, failedQuery)),
     /authentication_failed: run .*codex-go-router claude login/);
   assert.throws(() => bridge.conversation({ input: [{ role: 'user', content: [{ type: 'input_image', image_url: 'example' }] }] }), /images require/);
+});
+
+test('deferred Codex tool calls complete even when the SDK sets is_error', async () => {
+  const tool = { type: 'function', name: 'probe', parameters: { type: 'object', properties: {} } };
+  const deferredQuery = mock(async function* () {
+    yield assistant([{ type: 'tool_use', id: 'call_1', name: 'mcp__codex__' + bridge.toolAlias('probe'), input: {} }]);
+    yield result({ is_error: true, result: '', stop_reason: 'tool_deferred', terminal_reason: 'tool_deferred' });
+  });
+  const events = await captured(() => bridge.run({ model: 'sonnet', input: 'probe', tools: [tool] }, deferredQuery));
+  assert.equal(events.at(-1).type, 'complete');
+
+  for (const terminal of ['tool_deferred', 'api_error']) {
+    const failedQuery = mock(async function* () {
+      yield result({ is_error: true, result: '', stop_reason: terminal, terminal_reason: terminal });
+    });
+    await assert.rejects(captured(() => bridge.run({ model: 'sonnet', input: 'probe' }, failedQuery)),
+      new RegExp('Claude SDK request failed: ' + terminal));
+  }
+});
+
+test('unavailable deferred resume rebuilds once from Codex tool results', async () => {
+  const tool = { type: 'function', name: 'probe', parameters: { type: 'object', properties: {} } };
+  const request: Payload = { model: 'sonnet', input: 'probe', tools: [tool], _session_dir: sessionDir };
+  await captured(() => bridge.run(request, mock(async function* () {
+    yield assistant([{ type: 'tool_use', id: 'call_1', name: 'mcp__codex__' + bridge.toolAlias('probe'), input: {} }]);
+    yield result({ stop_reason: 'tool_deferred', terminal_reason: 'tool_deferred' });
+  })));
+  request.input = [
+    { role: 'user', content: 'probe' },
+    { type: 'function_call', name: 'probe', call_id: 'call_1', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'already executed' },
+  ];
+  let attempts = 0;
+  const resumeQuery = mock(async function* (params) {
+    attempts++;
+    if (attempts === 1) {
+      assert.equal(params.options.resume, 'test');
+      yield result({ is_error: true, result: '', terminal_reason: 'tool_deferred_unavailable' });
+    } else {
+      assert.equal(params.options.resume, undefined);
+      assert.match(await firstPrompt(params), /already executed/);
+      yield assistant([{ type: 'text', text: 'OK' }]);
+      yield result();
+    }
+  });
+  const events = await captured(() => bridge.run(request, resumeQuery));
+  assert.equal(attempts, 2);
+  assert.equal(events.filter((event) => event.type === 'complete').length, 1);
+  assert.equal(events[0].delta.content, 'OK');
 });
 
 test('subscription environment and namespaced schema', async () => {

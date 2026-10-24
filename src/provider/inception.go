@@ -110,6 +110,17 @@ func inceptionRequest(payload map[string]any) (map[string]any, map[string]bool, 
 		switch item["type"] {
 		case "reasoning":
 			continue
+		case "agent_message":
+			content, err := inceptionText(item["content"])
+			if err != nil {
+				return nil, nil, err
+			}
+			author, _ := item["author"].(string)
+			recipient, _ := item["recipient"].(string)
+			if author != "" || recipient != "" {
+				content = fmt.Sprintf("Agent message from %s to %s:\n%s", author, recipient, content)
+			}
+			messages = append(messages, map[string]any{"role": "user", "content": content})
 		case "function_call", "custom_tool_call":
 			arguments := item["arguments"]
 			if item["type"] == "custom_tool_call" {
@@ -232,6 +243,11 @@ func inceptionText(value any) (string, error) {
 	var text strings.Builder
 	for _, entry := range parts {
 		part, _ := entry.(map[string]any)
+		// OpenAI encrypted reasoning and inter-agent payloads cannot be
+		// decrypted by other providers. Keep readable parts in the message.
+		if part["type"] == "encrypted_content" {
+			continue
+		}
 		if part["type"] != "input_text" && part["type"] != "output_text" && part["type"] != "text" {
 			return "", fmt.Errorf("Mercury 3 supports text only; unsupported content %v", part["type"])
 		}

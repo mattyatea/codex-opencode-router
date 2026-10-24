@@ -32,7 +32,10 @@ const apiMaxBodyBytes = 8 << 20
 
 type apiContextKey int
 
-const apiPathKey apiContextKey = 0
+const (
+	apiPathKey apiContextKey = iota
+	apiClientHostKey
+)
 
 // serveAPI starts the ChatGPT API base listeners on comma-separated addresses.
 // It is called from main alongside the model router so both share one process.
@@ -67,15 +70,26 @@ func newAPIProxy() *httputil.ReverseProxy {
 			pr.Out.URL.Host = upstream.Host
 			pr.Out.URL.Path = path
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
-			pr.Out.Host = upstream.Host
+			if path == "/api/codex/app/appcast" {
+				// Match the desktop app's production update endpoint.
+				pr.Out.URL.Scheme = "https"
+				pr.Out.URL.Host = "updates.oaistatic.com"
+				pr.Out.URL.Path = "/codex/app/appcast"
+				pr.Out.Header.Del("Authorization")
+				pr.Out.Header.Del("Cookie")
+			}
+			pr.Out.Host = pr.Out.URL.Host
 			// Let the transport negotiate and transparently decompress.
 			pr.Out.Header.Del("Accept-Encoding")
 			pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), apiPathKey, path))
+			pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), apiClientHostKey, pr.In.Host))
 		},
 		Transport:     transport,
 		FlushInterval: 100 * time.Millisecond,
 		ModifyResponse: func(resp *http.Response) error {
 			path, _ := resp.Request.Context().Value(apiPathKey).(string)
+			clientHost, _ := resp.Request.Context().Value(apiClientHostKey).(string)
+			rewriteCookieDomains(resp, clientHost)
 			log.Printf("%s %s -> %d", resp.Request.Method, path, resp.StatusCode)
 			return rewriteUsage(resp, path)
 		},
@@ -84,6 +98,27 @@ func newAPIProxy() *httputil.ReverseProxy {
 			log.Printf("api proxy error %s %s: %v", r.Method, path, err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
+	}
+}
+
+// Bind upstream cookies to the loopback proxy without changing their values
+// or security attributes. Preserve unknown attributes verbatim.
+func rewriteCookieDomains(resp *http.Response, clientHost string) {
+	client, err := url.Parse("http://" + clientHost)
+	if err != nil || (client.Hostname() != "localhost" && client.Hostname() != "127.0.0.1" && client.Hostname() != "::1") {
+		return
+	}
+	for i, raw := range resp.Header.Values("Set-Cookie") {
+		parts := strings.Split(raw, ";")
+		for j := 1; j < len(parts); j++ {
+			key, value, ok := strings.Cut(strings.TrimSpace(parts[j]), "=")
+			if ok && strings.EqualFold(key, "Domain") && strings.EqualFold(strings.TrimPrefix(value, "."), resp.Request.URL.Hostname()) {
+				parts = append(parts[:j], parts[j+1:]...)
+				resp.Header[http.CanonicalHeaderKey("Set-Cookie")][i] = strings.Join(parts, ";")
+				log.Printf("api proxy cookie domain normalized for host=%s", client.Hostname())
+				break
+			}
+		}
 	}
 }
 

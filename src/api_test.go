@@ -2,9 +2,59 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"strings"
 	"testing"
 )
+
+func TestProxyCookieDomains(t *testing.T) {
+	for _, host := range []string{"localhost:8000", "127.0.0.1:8000", "[::1]:8000", "example.com:8000"} {
+		in := httptest.NewRequest("POST", "http://"+host+"/backend-api/devicecheck", nil)
+		pr := &httputil.ProxyRequest{In: in, Out: in.Clone(in.Context())}
+		proxy := newAPIProxy()
+		proxy.Rewrite(pr)
+		raw := "_devicecheck=signed-value; Domain=.chatgpt.com; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=3600; Partitioned"
+		other := "other=value; Domain=example.com; Path=/; Secure"
+		resp := &http.Response{Request: pr.Out, StatusCode: 200, Header: http.Header{"Set-Cookie": {raw, other}}}
+		if err := proxy.ModifyResponse(resp); err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Replace(raw, "; Domain=.chatgpt.com", "", 1)
+		if host == "example.com:8000" {
+			want = raw
+		}
+		if got := resp.Header.Values("Set-Cookie"); len(got) != 2 || got[0] != want || got[1] != other {
+			t.Fatalf("%s: cookie attributes changed unexpectedly", host)
+		}
+	}
+}
+
+func TestAppcastProxyRoute(t *testing.T) {
+	for _, path := range []string{"/api/codex/app/appcast", "/backend-api/devicecheck", "/api/codex/app/appcast/other"} {
+		in := httptest.NewRequest("GET", "http://localhost:8000"+path+"?installation_id=test&beta=true&arch=arm64", nil)
+		in.Header.Set("Authorization", "Bearer test")
+		in.Header.Set("Cookie", "session=test")
+		pr := &httputil.ProxyRequest{In: in, Out: in.Clone(in.Context())}
+		newAPIProxy().Rewrite(pr)
+		want := chatgptOrigin + path
+		if path == "/api/codex/app/appcast" {
+			want = "https://updates.oaistatic.com/codex/app/appcast"
+			if pr.Out.Header.Get("Authorization") != "" || pr.Out.Header.Get("Cookie") != "" {
+				t.Fatal("credentials forwarded to update CDN")
+			}
+		} else if pr.Out.Header.Get("Authorization") != "Bearer test" {
+			t.Fatal("backend credentials removed")
+		}
+		if got := pr.Out.URL.String(); got != want+"?"+in.URL.RawQuery {
+			t.Fatalf("route %s: got %s, want %s", path, got, want)
+		}
+		if pr.Out.Host != pr.Out.URL.Host {
+			t.Fatal("incorrect upstream Host")
+		}
+	}
+}
 
 func TestIsUsagePath(t *testing.T) {
 	cases := map[string]bool{
