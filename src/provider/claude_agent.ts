@@ -159,7 +159,13 @@ export function promptContent(history: HistoryItem[], bootstrap = false): Messag
     return [{ type: 'text', text }, ...images.flatMap((image, i) => [{ type: 'text', text: `Attached image ${i + 1}:` }, image])];
   }
   return history.flatMap((item): Block[] => {
-    if (isToolOutput(item)) return [{ type: 'tool_result', tool_use_id: item.call_id, content: item.output }];
+    // The SDK already recorded a handoff acknowledgement for this tool ID.
+    // Send the real result as data, not a duplicate native tool_result.
+    if (isToolOutput(item)) {
+      const label = { type: 'text', text: `Codex executed tool ${item.call_id}. Result:` };
+      const content = typeof item.output === 'string' ? [{ type: 'text', text: item.output }] : item.output ?? [];
+      return [label, ...content];
+    }
     if (item.role === 'user') {
       return Array.isArray(item.content) ? item.content : [{ type: 'text', text: item.content }];
     }
@@ -168,7 +174,7 @@ export function promptContent(history: HistoryItem[], bootstrap = false): Messag
 }
 
 type SessionState = { session_id: string; system: string; history: string[] };
-export type Session = { cwd: string; resume: string | null; pending: HistoryItem[]; statePath: string | null; close: () => void };
+export type Session = { cwd: string; resume: string | null; reason: string; pending: HistoryItem[]; statePath: string | null; close: () => void };
 
 // The router locks `_session_dir` for this process. Without it (no Codex thread
 // ID) the turn runs in a throwaway directory and nothing is persisted.
@@ -176,7 +182,7 @@ export function openSession(payload: Partial<Payload>, system: string, history: 
   const directory = payload._session_dir;
   if (!directory) {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-claude-'));
-    return { cwd, resume: null, pending: history, statePath: null, close: () => fs.rmSync(cwd, { recursive: true, force: true }) };
+    return { cwd, resume: null, reason: 'no_thread', pending: history, statePath: null, close: () => fs.rmSync(cwd, { recursive: true, force: true }) };
   }
   const statePath = path.join(directory, 'state.json');
   let state: SessionState | null = null;
@@ -188,12 +194,14 @@ export function openSession(payload: Partial<Payload>, system: string, history: 
   const hashes = historyHashes(history);
   let resume: string | null = null;
   let pending = history;
+  let reason = !state ? 'no_state' : state.system !== fingerprint(system) ? 'system_changed' : 'history_changed';
   if (state && state.system === fingerprint(system)) {
     const previous = state.history;
     if (hashes.length > previous.length && previous.every((hash, i) => hashes[i] === hash)) {
       const suffix = history.slice(previous.length);
       if (suffix.every((item) => item.role === 'user' || isToolOutput(item))) {
         resume = state.session_id;
+        reason = 'matched';
         pending = suffix;
       }
     }
@@ -201,7 +209,7 @@ export function openSession(payload: Partial<Payload>, system: string, history: 
   // A cancelled/failed request may have changed the SDK transcript. Never
   // resume it from an older cursor; the next request bootstraps from Codex.
   fs.rmSync(statePath, { force: true });
-  return { cwd: directory, resume, pending, statePath, close() {} };
+  return { cwd: directory, resume, reason, pending, statePath, close() {} };
 }
 
 // Run the SDK on the Claude subscription login, never an API key or other endpoint.
@@ -275,10 +283,11 @@ export async function discoverModels(queryFn: ControlQuery = query): Promise<voi
   }
 }
 
-export const deferTool: HookCallback = async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'defer' } });
+export const allowHandoff: HookCallback = async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } });
 
-export async function neverExecute(): Promise<never> {
-  throw new Error('Codex tools must be executed by Codex, not by the SDK');
+// Acknowledge only; Codex remains the sole executor of the real tool.
+export async function handoffTool() {
+  return { content: [{ type: 'text', text: 'Execution handed to Codex. The actual result will follow in the next message; do not run this call again.' }] };
 }
 
 // Codex tools arrive as JSON Schema, so they are listed on the low-level MCP
@@ -310,7 +319,7 @@ export function codexTools(definitions: ToolDefinition[]): [McpTool[], ToolNames
 function codexMcpServer(tools: McpTool[]): McpSdkServerConfigWithInstance {
   const server = new McpServer({ name: 'codex', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools as never }));
-  server.server.setRequestHandler(CallToolRequestSchema, neverExecute);
+  server.server.setRequestHandler(CallToolRequestSchema, handoffTool);
   return { type: 'sdk', name: 'codex', instance: server };
 }
 
@@ -358,6 +367,7 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
   const extra: Record<string, string> = { ENABLE_TOOL_SEARCH: 'false' };
   if (payload.max_output_tokens !== undefined) extra.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(payload.max_output_tokens);
   const session = openSession(payload, system, history);
+  console.error(JSON.stringify({ event: 'claude_session', resumed: Boolean(session.resume), reason: session.reason, history_items: history.length, pending_items: session.pending.length, pending_chars: JSON.stringify(session.pending).length }));
   try {
     const content = promptContent(session.pending, session.resume === null);
     const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
@@ -371,7 +381,7 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
       model: payload.model, systemPrompt: system, tools: [],
       mcpServers: tools.length ? { codex: codexMcpServer(tools) } : {},
       strictMcpConfig: true, settingSources: [], cwd: session.cwd,
-      hooks: { PreToolUse: [{ hooks: [deferTool] }] },
+      hooks: { PreToolUse: [{ matcher: '^mcp__codex__tool_', hooks: [allowHandoff] }] },
       permissionMode: 'default', maxTurns: 1, effort: effort as Options['effort'],
       includePartialMessages: true, env: subscriptionEnvironment(extra),
       persistSession: Boolean(session.statePath), abortController,
@@ -430,6 +440,7 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
           streamedText = false;
         } else if (message.type === 'result') {
           result = message;
+          console.error(JSON.stringify({ event: 'claude_usage', input: result.usage.input_tokens ?? 0, cache_write: result.usage.cache_creation_input_tokens ?? 0, cache_read: result.usage.cache_read_input_tokens ?? 0, output: result.usage.output_tokens ?? 0, terminal_reason: result.terminal_reason }));
           // Report completion now: closing the SDK waits ~0.7s for the CLI to exit.
           // The router keeps the session locked until the state below is saved.
           emit(completion(result, calls, stopReason));
@@ -443,9 +454,10 @@ export async function run(payload: Payload, queryFn: RunQuery = query): Promise<
     } finally {
       process.off('SIGINT', abort);
     }
-    // Some CLI versions cannot resume deferred MCP calls. Rebuild once from
-    // Codex history; openSession already removed the stale resume cursor.
+    // Older saved sessions can still contain deferred MCP calls. Recover once
+    // from Codex history; new sessions acknowledge handoff instead of deferring.
     if (rebuildSession) {
+      console.error(JSON.stringify({ event: 'claude_session', resumed: false, reason: 'tool_deferred_unavailable' }));
       await run(payload, queryFn);
       return;
     }

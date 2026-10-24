@@ -145,6 +145,7 @@ func claudeRoundTrip(b ClaudeBridge, sessionRoot string, request *http.Request) 
 	}
 	cmd := b.command(ctx)
 	cmd.Stdin = bytes.NewReader(encoded)
+	cmd.Stderr = os.Stderr
 	// Give the SDK time to close its own subprocess on disconnect.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
