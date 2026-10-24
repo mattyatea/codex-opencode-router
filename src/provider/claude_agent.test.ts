@@ -97,8 +97,8 @@ test('Codex tool call and result round trip', async () => {
     assert.deepEqual(await firstPrompt(params), [{ type: 'text', text: 'Run pwd' }]);
     assert.equal(options.resume, undefined);
     const decision = await options.hooks!.PreToolUse![0].hooks[0]({} as never, undefined, {} as never);
-    assert.deepEqual(decision, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'defer' } });
-    await assert.rejects(bridge.neverExecute(), /executed by Codex/);
+    assert.deepEqual(decision, { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } });
+    assert.match((await bridge.handoffTool()).content[0].text, /Execution handed to Codex/);
     yield assistant([
       { type: 'tool_use', id: 'call_1', name: 'mcp__codex__' + bridge.toolAlias('exec_command'), input: { cmd: 'pwd' } },
       { type: 'tool_use', id: 'call_2', name: 'mcp__codex__' + bridge.toolAlias('apply_patch'), input: { input: '*** Begin Patch\n*** End Patch' } },
@@ -125,8 +125,10 @@ test('Codex tool call and result round trip', async () => {
     assert.equal(options.resume, 'test');
     assert.ok('codex' in options.mcpServers!);
     assert.deepEqual(await firstPrompt(params), [
-      { type: 'tool_result', tool_use_id: 'call_1', content: '/workspace' },
-      { type: 'tool_result', tool_use_id: 'call_2', content: 'Done' },
+      { type: 'text', text: 'Codex executed tool call_1. Result:' },
+      { type: 'text', text: '/workspace' },
+      { type: 'text', text: 'Codex executed tool call_2. Result:' },
+      { type: 'text', text: 'Done' },
     ]);
     yield { type: 'stream_event', parent_tool_use_id: null, event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '/workspace' } } };
     yield assistant([{ type: 'text', text: '/workspace' }, { type: 'tool_use', id: 'call_3', name: 'exec_command', input: { cmd: 'ls' } }]);
@@ -199,7 +201,7 @@ test('images survive initial, resumed, and bootstrapped turns', async () => {
   assert.doesNotMatch(blocks[0].text!, /aW1hZ2U=/);
   assert.deepEqual(bridge.historyHashes(history), before);
   const [, results] = bridge.conversation({ input: [{ type: 'function_call_output', call_id: 'image-call', output: content }] });
-  assert.deepEqual(bridge.promptContent(results), [{ type: 'tool_result', tool_use_id: 'image-call', content: expected }]);
+  assert.deepEqual(bridge.promptContent(results), [{ type: 'text', text: 'Codex executed tool image-call. Result:' }, ...expected]);
 });
 
 test('tool names resolve only available, unambiguous tools', () => {
@@ -319,4 +321,34 @@ test('subscription environment and namespaced schema', async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
   }
+});
+
+test('handoff completes the SDK turn and resumes with only the real result', async () => {
+  const tool = { type: 'function', name: 'probe', parameters: { type: 'object', properties: {} } };
+  const request: Payload = { model: 'haiku', input: [{ role: 'user', content: 'Call probe once, then say DONE.' }], tools: [tool], _session_dir: sessionDir };
+  await captured(() => bridge.run(request, mock(async function* () {
+    yield assistant([{ type: 'tool_use', id: 'call_1', name: 'mcp__codex__' + bridge.toolAlias('probe'), input: {} }]);
+    yield result({ subtype: 'error_max_turns', is_error: true, errors: [] });
+    throw new Error('maximum turns');
+  })));
+  assert.equal(fs.existsSync(statePath()), true);
+  (request.input as InputItem[]).push(
+    { type: 'function_call', name: 'probe', call_id: 'call_1', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: '7' },
+  );
+  let attempts = 0;
+  const events = await captured(() => bridge.run(request, mock(async function* (params) {
+    attempts++;
+    assert.equal(params.options.resume, 'test');
+    assert.deepEqual(await firstPrompt(params), [
+      { type: 'text', text: 'Codex executed tool call_1. Result:' },
+      { type: 'text', text: '7' },
+    ]);
+    yield assistant([{ type: 'text', text: 'DONE' }]);
+    yield result();
+  })));
+  assert.equal(attempts, 1);
+  assert.equal(events[0].delta.content, 'DONE');
+  const state = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
+  assert.equal(state.history.length, 4);
 });
