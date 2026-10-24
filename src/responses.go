@@ -103,6 +103,7 @@ func (rt *router) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 func prepareProviderRequest(p *provider.Provider, payload map[string]any, incoming http.Header) (string, http.Header) {
 	payload["model"] = strings.TrimPrefix(payload["model"].(string), p.ModelPrefix())
+	replaceOriginalImageDetail(payload["input"])
 	headers := http.Header{}
 	if p.APIKey != "" {
 		headers.Set("Authorization", "Bearer "+p.APIKey)
@@ -116,6 +117,25 @@ func prepareProviderRequest(p *provider.Provider, payload map[string]any, incomi
 		}
 	}
 	return p.BaseURL + "/responses", headers
+}
+
+// replaceOriginalImageDetail downgrades Codex's ChatGPT-only image detail
+// "original" (sent by view_image, also inside tool outputs) to "high", because
+// public Responses API providers accept only auto, low, and high.
+func replaceOriginalImageDetail(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		if node["type"] == "input_image" && node["detail"] == "original" {
+			node["detail"] = "high"
+		}
+		for _, child := range node {
+			replaceOriginalImageDetail(child)
+		}
+	case []any:
+		for _, child := range node {
+			replaceOriginalImageDetail(child)
+		}
+	}
 }
 
 func rewriteProviderResponse(p *provider.Provider, response *http.Response) error {
