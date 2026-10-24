@@ -115,6 +115,10 @@ func TestOpenCodeRouting(t *testing.T) {
 				if len(required) != 1 || required[0] != "query" {
 					t.Errorf("tool schema was not normalized: %v", parameters)
 				}
+				image := payload["input"].([]any)[0].(map[string]any)["output"].([]any)[0].(map[string]any)
+				if image["detail"] != "high" {
+					t.Errorf("image detail = %v, want high", image["detail"])
+				}
 				if !stream {
 					w.Header().Set("Content-Type", "application/json")
 					fmt.Fprint(w, jsonResponse)
@@ -128,7 +132,7 @@ func TestOpenCodeRouting(t *testing.T) {
 			p.BaseURL = server.URL + "/zen/go/v1"
 			p.APIKey = "go-key"
 			rt := newRouter([]provider.Provider{p})
-			r := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"go-deepseek-v4.1-flash","tools":[{"type":"function","parameters":{"properties":{"query":{"type":"string"}}}}]}`))
+			r := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"go-deepseek-v4.1-flash","input":[{"type":"function_call_output","call_id":"c","output":[{"type":"input_image","image_url":"data:image/png;base64,eA==","detail":"original"}]}],"tools":[{"type":"function","parameters":{"properties":{"query":{"type":"string"}}}}]}`))
 			r.Header.Set("Session-Id", "conversation")
 			r.Header.Set("Authorization", "Bearer chatgpt-key")
 			w := httptest.NewRecorder()
